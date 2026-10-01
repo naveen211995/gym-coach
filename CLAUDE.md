@@ -56,10 +56,14 @@ you're tempted to compute a recommendation inline in a `.tsx` file, stop —
 it belongs in `src/engine`, covered by tests, and the component just renders
 the result.
 
-The whole app builds to a **single self-contained `dist/index.html`** via
-`node build.mjs` (esbuild, React from a CDN UMD build). There is no server
-component — this file is what gets deployed (e.g. to GitHub Pages) and added
-to a phone's home screen as a pseudo-app.
+The whole app builds to a **single self-contained `index.html` at the repo
+root** via `node build.mjs` (esbuild, React from a CDN UMD build). There is no
+server component — that one file is the deployment.
+
+GitHub Pages can only serve a branch root or `/docs`, never a `/dist` folder,
+so the root `index.html` is both the build output and the deployed app. It is
+generated and committed; **never hand-edit it** — edit `src/` and rebuild.
+There is deliberately no second copy of the artifact to drift out of sync.
 
 ## Development approach for any non-trivial change
 
@@ -70,7 +74,8 @@ Before implementing a significant feature:
 4. Write or update tests.
 5. Implement the feature.
 6. Run tests (`npx vitest run`, `npx tsc --noEmit`).
-7. Rebuild (`node build.mjs`) and re-run the E2E suite
+7. Rebuild (`node build.mjs`, which regenerates the root `index.html`) and
+   re-run the E2E suite
    (`python3 tests/e2e/e2e_smoke.py` and `tests/e2e/focus_regression.py`).
 8. Inspect the result, fix any issues found.
 
@@ -122,7 +127,7 @@ conversion, the `plt` unit (never converted), different rep ranges and set
 counts, and invalid/missing inputs. **Never consider a progression-engine
 change complete without tests covering it.**
 
-E2E coverage (Playwright, `tests/e2e/`) exercises the built `dist/index.html`
+E2E coverage (Playwright, `tests/e2e/`) exercises the built root `index.html`
 against a real HTTP origin (IndexedDB requires one, not `file://`), including
 a dedicated regression test for the Sheet-component focus bug — don't let a
 future change to `Sheet`/modal focus handling regress it.
@@ -134,10 +139,11 @@ future change to `Sheet`/modal focus handling regress it.
   tests, never inline in a component.
 - After any change: `npx tsc --noEmit`, `npx vitest run`, `node build.mjs`,
   then the Playwright E2E suite, before calling the change done.
-- Deploying an update to the phone = overwrite `dist/index.html` in the
-  GitHub repo (git push, or manual upload via GitHub's web UI) → GitHub
-  Pages redeploys in under a minute → reopen the existing Home Screen icon
-  (no need to re-add it, unless the icon itself changed).
+- Deploying an update to the phone = run `node build.mjs`, then commit and
+  push the regenerated root `index.html` → GitHub Pages redeploys in under a
+  minute → reopen the existing Home Screen icon (no need to re-add it, unless
+  the icon itself changed). Don't upload the file by hand through the web UI:
+  that is what let the artifact drift ahead of `src/`.
 - Never introduce a backend, authentication, or a paid API to solve a
   problem — solve it locally/offline first, and say so explicitly if a
   request seems to need one.

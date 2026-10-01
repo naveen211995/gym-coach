@@ -16,3 +16,6 @@ Thumbs.db
 
 # Machine-local Claude Code permissions
 .claude/settings.local.json
+
+# Stale build dir: the artifact now lives at the repo root only.
+dist/

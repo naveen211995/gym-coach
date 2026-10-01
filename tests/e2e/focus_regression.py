@@ -19,7 +19,7 @@ from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
 ROOT = Path(__file__).resolve().parents[2]
-HTML = ROOT / "dist" / "index.html"
+HTML = ROOT / "index.html"
 SHOTS = ROOT / "shots"
 NM = ROOT / "node_modules"
 UMD = {

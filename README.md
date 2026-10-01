@@ -6,9 +6,10 @@ No backend, no account, no external APIs. Data lives in IndexedDB; works offline
 ## Scripts
 - `npm run typecheck` – TypeScript strict mode
 - `npm test` – unit tests (engine, edge cases, services, backup, seed)
-- `npm run build` – single self-contained HTML, written to both `dist/index.html` and the
-  repo-root `index.html` (the file people open). The build owns both, so never hand-edit them.
-  Set `BUILD_COPY_TO=<dir>` for an extra copy.
+- `npm run build` – single self-contained HTML written to the repo-root `index.html`.
+  That file is the deployed app (GitHub Pages serves the branch root), it is generated,
+  and it must never be hand-edited — edit `src/` and rebuild. `BUILD_COPY_TO=<dir>` adds
+  an extra copy elsewhere.
 - `PLAYWRIGHT_BROWSERS_PATH=… python3 tests/e2e/e2e_smoke.py` – phone-size browser test (after build)
 
 ## Layers (dependencies point downward only)

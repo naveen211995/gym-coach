@@ -54,19 +54,18 @@ const html = `<!doctype html>
 </body>
 </html>
 `;
-mkdirSync('dist', { recursive: true });
-writeFileSync('dist/index.html', html);
-// The repo-root artifact is the app people actually open, so the build owns it.
-// Keeping it generated stops src/ and the shipped file drifting apart.
+// GitHub Pages serves a branch root (or /docs), never /dist, so the root
+// index.html IS the deployed app. One generated artifact in one place: there
+// is no second copy for src/ to drift away from.
 writeFileSync('index.html', html);
 // Optional extra copy (sandboxed environments); set BUILD_COPY_TO to enable.
 const extra = process.env.BUILD_COPY_TO;
 if (extra) {
   try {
     mkdirSync(extra, { recursive: true });
-    copyFileSync('dist/index.html', `${extra}/gym-progression-coach.html`);
+    copyFileSync('index.html', `${extra}/gym-progression-coach.html`);
   } catch (e) {
     console.warn(`Could not copy to ${extra}: ${e.message}`);
   }
 }
-console.log(`dist/index.html ${(html.length / 1024).toFixed(1)} KB`);
+console.log(`index.html ${(html.length / 1024).toFixed(1)} KB`);
