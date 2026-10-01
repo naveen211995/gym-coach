@@ -1,0 +1,18 @@
+# Dependencies
+node_modules/
+
+# E2E screenshots and scratch output
+shots/
+
+# dist/ is intentionally NOT ignored: dist/index.html and the repo-root
+# index.html are the deployed artifacts served by GitHub Pages (see CLAUDE.md).
+
+# Editor / OS noise
+.DS_Store
+Thumbs.db
+*.log
+.vscode/*
+!.vscode/settings.json
+
+# Machine-local Claude Code permissions
+.claude/settings.local.json
