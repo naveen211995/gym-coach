@@ -1,16 +1,18 @@
 # Gym Progression Coach
 
 Local-first workout logger with a deterministic, explainable progression engine.
-No backend, no account, no external APIs. Data lives in IndexedDB; works offline once loaded.
+No backend, no account, no external APIs, no CDN at runtime. Data lives in IndexedDB.
+Installs to a phone home screen and launches fullscreen and offline via a service worker.
 
 ## Scripts
 - `npm run typecheck` – TypeScript strict mode
 - `npm test` – unit tests (engine, edge cases, services, backup, seed)
-- `npm run build` – single self-contained HTML written to the repo-root `index.html`.
-  That file is the deployed app (GitHub Pages serves the branch root), it is generated,
-  and it must never be hand-edited — edit `src/` and rebuild. `BUILD_COPY_TO=<dir>` adds
-  an extra copy elsewhere.
-- `PLAYWRIGHT_BROWSERS_PATH=… python3 tests/e2e/e2e_smoke.py` – phone-size browser test (after build)
+- `npm run build` – generates five deployed files at the repo root: `index.html`
+  (self-contained app, React inlined), `sw.js`, `manifest.webmanifest` and two icons.
+  All are generated and committed; never hand-edit them — edit `src/` and rebuild.
+  `BUILD_COPY_TO=<dir>` adds an extra copy of the HTML elsewhere.
+- `python tests/e2e/e2e_smoke.py`, `focus_regression.py`, `offline_pwa.py` – phone-size
+  browser tests (after a build). Needs `pip install playwright && playwright install chromium`.
 
 ## Layers (dependencies point downward only)
 - `src/domain` – normalized models, defaults, `Change` (a described write)

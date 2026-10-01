@@ -19,3 +19,6 @@ Thumbs.db
 
 # Stale build dir: the artifact now lives at the repo root only.
 dist/
+
+# Python bytecode from the E2E harness
+__pycache__/

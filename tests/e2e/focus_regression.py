@@ -18,14 +18,15 @@ import re, sys
 from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from harness import ORIGIN, install_routes, ignorable, missing_outputs  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
-HTML = ROOT / "index.html"
 SHOTS = ROOT / "shots"
-NM = ROOT / "node_modules"
-UMD = {
-    "react.production.min.js": NM / "react/umd/react.production.min.js",
-    "react-dom.production.min.js": NM / "react-dom/umd/react-dom.production.min.js",
-}
+
+absent = missing_outputs()
+if absent:
+    sys.exit("Missing build output: %s -- run `node build.mjs` first." % ", ".join(absent))
 TYPED = "Push Pull Legs"
 errors, results = [], []
 
@@ -42,12 +43,8 @@ with sync_playwright() as p:
     page = ctx.new_page()
     page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
     page.on("pageerror", lambda e: errors.append(str(e)))
-    page.route("https://cdnjs.cloudflare.com/**",
-               lambda r: r.fulfill(path=str(UMD[r.request.url.rsplit("/", 1)[-1]]),
-                                   content_type="application/javascript"))
-    page.route(re.compile("https://fonts.(googleapis|gstatic).com/.*"), lambda r: r.abort())
-    page.route("http://gym.test/**", lambda r: r.fulfill(path=str(HTML), content_type="text/html"))
-    page.goto("http://gym.test/")
+    install_routes(page)
+    page.goto(ORIGIN + "/")
 
     expect(page.get_by_role("heading", name=re.compile("Today"))).to_be_visible(timeout=15000)
 
@@ -121,7 +118,7 @@ with sync_playwright() as p:
 
     browser.close()
 
-real_errors = [e for e in errors if "fonts.g" not in e and "ERR_FAILED" not in e]
+real_errors = [e for e in errors if not ignorable(e)]
 check("no console errors (%s)" % real_errors[:3], not real_errors)
 failed = [n for n, ok in results if not ok]
 print("\n%d/%d checks passed" % (len(results) - len(failed), len(results)))

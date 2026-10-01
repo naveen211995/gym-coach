@@ -1,6 +1,6 @@
 """
 End-to-end smoke test in headless Chromium at iPhone size.
-React UMD is served from node_modules (the sandbox can't reach cdnjs); fonts are blocked (fallback stack).
+React is inlined in the build, so cdnjs is blocked outright; fonts are blocked too (fallback stack).
 Checks: renders every screen, logs sets, auto-computes next target, data survives reload (IndexedDB),
 JSON export -> erase -> import round-trip, CSV export, no console errors.
 """
@@ -8,26 +8,20 @@ import json, os, re, sys
 from pathlib import Path
 from playwright.sync_api import sync_playwright, expect
 
+sys.path.insert(0, str(Path(__file__).resolve().parent))
+from harness import ORIGIN, install_routes, ignorable, missing_outputs  # noqa: E402
+
 ROOT = Path(__file__).resolve().parents[2]
-HTML = ROOT / "index.html"
 SHOTS = ROOT / "shots"
-NM = ROOT / "node_modules"
-UMD = {
-    "react.production.min.js": NM / "react/umd/react.production.min.js",
-    "react-dom.production.min.js": NM / "react-dom/umd/react-dom.production.min.js",
-}
 errors, results = [], []
+
+absent = missing_outputs()
+if absent:
+    sys.exit("Missing build output: %s -- run `node build.mjs` first." % ", ".join(absent))
 
 def check(name, cond):
     results.append((name, bool(cond)))
     print(("PASS " if cond else "FAIL ") + name)
-
-def route_cdn(route):
-    fn = route.request.url.rsplit("/", 1)[-1]
-    route.fulfill(path=str(UMD[fn]), content_type="application/javascript")
-
-def serve_page(route):
-    route.fulfill(path=str(HTML), content_type="text/html")
 
 with sync_playwright() as p:
     browser = p.chromium.launch()
@@ -35,10 +29,8 @@ with sync_playwright() as p:
     page = ctx.new_page()
     page.on("console", lambda m: errors.append(m.text) if m.type == "error" else None)
     page.on("pageerror", lambda e: errors.append(str(e)))
-    page.route("https://cdnjs.cloudflare.com/**", route_cdn)
-    page.route(re.compile(r"https://fonts\.(googleapis|gstatic)\.com/.*"), lambda r: r.abort())
-    page.route("http://gym.test/**", serve_page)  # a real origin so IndexedDB persists
-    page.goto("http://gym.test/")
+    install_routes(page)
+    page.goto(ORIGIN + "/")
 
     expect(page.get_by_role("heading", name=re.compile("Today"))).to_be_visible(timeout=15000)
     page.screenshot(path=str(SHOTS / "01-home.png"), full_page=True)
@@ -167,7 +159,7 @@ with sync_playwright() as p:
 
     browser.close()
 
-real_errors = [e for e in errors if "fonts.g" not in e and "ERR_FAILED" not in e]
+real_errors = [e for e in errors if not ignorable(e)]
 check(f"no console errors ({real_errors[:3]})", not real_errors)
 failed = [n for n, ok in results if not ok]
 print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")

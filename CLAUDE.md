@@ -22,8 +22,11 @@ previously logged."* Charts and polish are secondary to that.
 3. **Never silently overwrite historical workout data.** Edits/imports must be
    additive or explicit, never destructive without the user's clear intent.
 4. All progression-engine behavior must be covered by **automated tests**.
-5. The app must work **fully offline** once loaded, and needs **no backend**
-   for core functionality — everything is local-first.
+5. The app must work **fully offline**, including a cold launch from the
+   home screen, and needs **no backend** for core functionality — everything
+   is local-first. React is bundled into the HTML (never fetched from a CDN
+   at runtime) and a service worker caches the shell, so a launch with no
+   signal still works. Don't reintroduce a runtime dependency on a CDN.
 6. **No external paid APIs.** No authentication unless absolutely necessary.
    No unnecessary dependencies.
 7. Design for **fast gym usage on a phone**: large tap targets, numeric
@@ -56,14 +59,30 @@ you're tempted to compute a recommendation inline in a `.tsx` file, stop —
 it belongs in `src/engine`, covered by tests, and the component just renders
 the result.
 
-The whole app builds to a **single self-contained `index.html` at the repo
-root** via `node build.mjs` (esbuild, React from a CDN UMD build). There is no
-server component — that one file is the deployment.
+`node build.mjs` (esbuild) generates **five files at the repo root**, all
+committed, all deployed, none to be hand-edited — edit `src/` and rebuild:
 
-GitHub Pages can only serve a branch root or `/docs`, never a `/dist` folder,
-so the root `index.html` is both the build output and the deployed app. It is
-generated and committed; **never hand-edit it** — edit `src/` and rebuild.
-There is deliberately no second copy of the artifact to drift out of sync.
+```
+index.html                 the app: React, CSS and icons all inlined
+sw.js                      service worker (from src/ui/sw.js, build id injected)
+manifest.webmanifest       standalone / installable metadata
+icon-512.png               icons the manifest points at
+apple-touch-icon-180.png
+```
+
+`index.html` on its own is still a complete, self-contained working app. The
+other four are progressive enhancement for the installed experience: without
+them you lose offline launch and fullscreen, nothing else. A service worker
+cannot be inlined into HTML — it needs its own URL and scope — which is why
+the build is no longer a single file.
+
+There is no server component. GitHub Pages can only serve a branch root or
+`/docs`, never a `/dist` folder, so these live at the root and there is
+deliberately no second copy of any artifact to drift out of sync.
+
+**Every URL in the build must be relative** (`./sw.js`, `start_url: "./"`).
+Pages serves this project from `/<repo>/`, not the domain root, so an absolute
+`/sw.js` would 404.
 
 ## Development approach for any non-trivial change
 
@@ -76,7 +95,7 @@ Before implementing a significant feature:
 6. Run tests (`npx vitest run`, `npx tsc --noEmit`).
 7. Rebuild (`node build.mjs`, which regenerates the root `index.html`) and
    re-run the E2E suite
-   (`python3 tests/e2e/e2e_smoke.py` and `tests/e2e/focus_regression.py`).
+   (`e2e_smoke.py`, `focus_regression.py`, `offline_pwa.py` in `tests/e2e/`).
 8. Inspect the result, fix any issues found.
 
 Prefer simplicity, correctness, and maintainability over "fashionable"
@@ -127,10 +146,22 @@ conversion, the `plt` unit (never converted), different rep ranges and set
 counts, and invalid/missing inputs. **Never consider a progression-engine
 change complete without tests covering it.**
 
-E2E coverage (Playwright, `tests/e2e/`) exercises the built root `index.html`
-against a real HTTP origin (IndexedDB requires one, not `file://`), including
-a dedicated regression test for the Sheet-component focus bug — don't let a
-future change to `Sheet`/modal focus handling regress it.
+E2E coverage (Playwright, `tests/e2e/`) exercises the built root files from a
+real HTTP server on `127.0.0.1` (`harness.py` starts it). The origin must be
+`127.0.0.1`/`localhost`, not an invented host: service workers require a
+secure context, and on e.g. `http://gym.test` `navigator.serviceWorker` is
+undefined. The harness also aborts cdnjs, so if React ever stops being inlined
+the suites fail instead of silently using the live CDN.
+
+- `e2e_smoke.py` — every screen, logging, backup round-trip, responsiveness.
+- `focus_regression.py` — the Sheet-component focus bug. Don't let a future
+  change to `Sheet`/modal focus handling regress it. It documents one known
+  remaining gap: on a sheet whose input has `autoFocus`, React focuses that
+  input during commit, before `Sheet`'s effect reads `document.activeElement`,
+  so focus is not returned to the opener on close.
+- `offline_pwa.py` — service worker registers and precaches, the app boots
+  with the network fully offline, logged data survives it, and every emitted
+  URL is relative.
 
 ## Working agreement for Claude Code in this repo
 
@@ -140,10 +171,14 @@ future change to `Sheet`/modal focus handling regress it.
 - After any change: `npx tsc --noEmit`, `npx vitest run`, `node build.mjs`,
   then the Playwright E2E suite, before calling the change done.
 - Deploying an update to the phone = run `node build.mjs`, then commit and
-  push the regenerated root `index.html` → GitHub Pages redeploys in under a
-  minute → reopen the existing Home Screen icon (no need to re-add it, unless
-  the icon itself changed). Don't upload the file by hand through the web UI:
-  that is what let the artifact drift ahead of `src/`.
+  push **all regenerated root files** (`git add -A` covers them) → GitHub
+  Pages redeploys in under a minute → reopen the existing Home Screen icon (no
+  need to re-add it, unless the icon itself changed). The service worker is
+  network-first for the HTML, so a launch with signal picks the update up
+  immediately; an offline launch serves the last cached build. Each build gets
+  its own cache name, so the old cache is dropped on activate.
+  Don't upload files by hand through the web UI: that is what let the artifact
+  drift ahead of `src/` before.
 - Never introduce a backend, authentication, or a paid API to solve a
   problem — solve it locally/offline first, and say so explicitly if a
   request seems to need one.
