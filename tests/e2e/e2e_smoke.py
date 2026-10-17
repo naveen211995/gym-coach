@@ -106,7 +106,7 @@ with sync_playwright() as p:
     dl.value.save_as(str(backup_path))
     data = json.loads(backup_path.read_text())
     wcount = len([w for w in data["data"]["workoutSessions"] if w["status"] == "completed"])
-    check(f"backup has schemaVersion 1 and 21 workouts ({wcount})", data["schemaVersion"] == 1 and wcount == 21)
+    check(f"backup has schemaVersion 2 and 21 workouts ({wcount})", data["schemaVersion"] == 2 and wcount == 21)
     with page.expect_download() as dl2:
         page.get_by_role("button", name="Export workout history (CSV)").click()
     csv_path = SHOTS / "sets.csv"

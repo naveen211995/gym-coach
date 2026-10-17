@@ -32,8 +32,14 @@ previously logged."* Charts and polish are secondary to that.
 7. Design for **fast gym usage on a phone**: large tap targets, numeric
    steppers, minimal typing, swipe-friendly.
 8. Support **JSON export/import** and **CSV export** for backup — JSON must
-   carry a schema version for future migrations.
-9. Data is stored locally via **IndexedDB**. There is no sync between devices
+   carry a schema version for future migrations. Schema 2 added the weekly
+   schedule; every bump needs a migration in `storage/backup.ts` and a test.
+9. A routine carries a **weekly schedule** (weekday -> workout day, or an
+   explicit rest day). Today's workout comes from that schedule; a routine with
+   no schedule falls back to rotating through its days. Switching today's
+   workout is deliberately **not** persisted: it is a one-off, held in nav
+   state, never an edit to the schedule.
+10. Data is stored locally via **IndexedDB**. There is no sync between devices
    — each browser/device has its own independent local copy. (JSON
    export/import is the user's manual "sync" mechanism between devices.)
 
@@ -94,8 +100,8 @@ Before implementing a significant feature:
 5. Implement the feature.
 6. Run tests (`npx vitest run`, `npx tsc --noEmit`).
 7. Rebuild (`node build.mjs`, which regenerates the root `index.html`) and
-   re-run the E2E suite
-   (`e2e_smoke.py`, `focus_regression.py`, `offline_pwa.py` in `tests/e2e/`).
+   re-run the E2E suite (`e2e_smoke.py`, `focus_regression.py`,
+   `offline_pwa.py`, `schedule_and_advance.py` in `tests/e2e/`).
 8. Inspect the result, fix any issues found.
 
 Prefer simplicity, correctness, and maintainability over "fashionable"
@@ -112,6 +118,24 @@ Default strategy: **RIR-aware double progression** (e.g. 3×8–12 @ RIR 2).
 Supported strategies: `double`, `load-first`, `rep-first`, `time-based`
 (for holds/cardio). Supported deload strategies: `reduce-load`,
 `reduce-sets`, `none`.
+
+Engine 2.0 judges effort, not just reps. Every threshold lives in
+`src/engine/rules.ts`; the key ones:
+- Estimated max comes from **reps + RIR** (`estimateMaxFromSet`), capped at
+  `e1rmReliableMaxReps`. Same reps closer to failure is a regression; same reps
+  further from failure is progress. Reps alone cannot see either.
+- Load changes are **relative**: one rep is worth ~2.5% of load
+  (`repsPerPercentLoad`), a jump never exceeds `maxJumpPercent`, and never
+  leaves a set predicted below `minReps`. An increment too coarse for the rep
+  range is reported (`coarse-increment`) instead of bouncing the lifter between
+  "increase" and "decrease".
+- Rep targets at a new load are **predicted** from that same tradeoff, never
+  reset to the bottom of the range.
+- A reduce-load deload also drops a set and adds 1 RIR: shedding fatigue needs
+  less work, not just lighter work.
+- `src/engine/volume.ts` reports weekly sets and frequency per muscle group;
+  `src/engine/autoregulate.ts` suggests a load change for the sets remaining in
+  the current session. Both are pure, and neither changes a recommendation.
 
 Core behaviors (see `src/engine/rules.ts` for the authoritative rule IDs and
 reasons text):
@@ -162,6 +186,11 @@ the suites fail instead of silently using the live CDN.
 - `offline_pwa.py` — service worker registers and precaches, the app boots
   with the network fully offline, logged data survives it, and every emitted
   URL is relative.
+- `schedule_and_advance.py` — finishing an exercise opens the next *unfinished*
+  one **and scrolls it into view** (it used to open the right card up to 1,300px
+  off screen, so the finished card was still what you were looking at), and the
+  weekly schedule: an unscheduled routine says so, the one-tap split lands
+  Mon/Tue/Thu/Fri with Wed/Sat/Sun as rest, and Home then plans by weekday.
 
 ## Working agreement for Claude Code in this repo
 

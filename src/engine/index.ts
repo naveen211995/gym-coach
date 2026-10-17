@@ -6,4 +6,6 @@ export * from './sessionEval';
 export * from './trend';
 export * from './readiness';
 export * from './records';
+export * from './volume';
+export * from './autoregulate';
 export * from './progression';

@@ -1,4 +1,5 @@
 import type { PersonalRecordType } from '../domain/types';
+import { RULES } from './rules';
 import { LOAD_EPS, type NormalizedSet, type SessionEvaluation } from './sessionEval';
 import { roundTo } from './units';
 
@@ -21,6 +22,12 @@ export interface HistoricalBests {
 
 const performedSets = (ev: SessionEvaluation): NormalizedSet[] => [...ev.working, ...ev.extras];
 
+/**
+ * Sets a 1RM estimate may be claimed from. Epley drifts badly past ~15 reps, so
+ * a 25-rep set is not evidence of a new estimated max.
+ */
+const estimable = (sets: readonly NormalizedSet[]) => sets.filter((s) => s.reps <= RULES.e1rmReliableMaxReps);
+
 export function computeBests(evals: readonly SessionEvaluation[], timeBased: boolean): HistoricalBests {
   const bests: HistoricalBests = { heaviestLoad: null, bestE1rm: null, bestVolume: null, longestHold: null, repsAtLoad: [] };
   const byLoad = new Map<number, { reps: number; date: string }>();
@@ -31,14 +38,16 @@ export function computeBests(evals: readonly SessionEvaluation[], timeBased: boo
         if (!bests.longestHold || s.reps > bests.longestHold.seconds) bests.longestHold = { seconds: s.reps, date: ev.completedAt };
       }
       if (!bests.heaviestLoad || s.load > bests.heaviestLoad.load + LOAD_EPS) bests.heaviestLoad = { load: s.load, reps: s.reps, date: ev.completedAt };
-      if (!timeBased && s.e1rm > 0 && (!bests.bestE1rm || s.e1rm > bests.bestE1rm.value)) {
+      if (!timeBased && s.e1rm > 0 && s.reps <= RULES.e1rmReliableMaxReps && (!bests.bestE1rm || s.e1rm > bests.bestE1rm.value)) {
         bests.bestE1rm = { value: s.e1rm, load: s.load, reps: s.reps, date: ev.completedAt };
       }
       const key = roundTo(s.load, 3);
       const cur = byLoad.get(key);
       if (!cur || s.reps > cur.reps) byLoad.set(key, { reps: s.reps, date: ev.completedAt });
     }
-    if (!timeBased && ev.volume > 0 && (!bests.bestVolume || ev.volume > bests.bestVolume.value)) bests.bestVolume = { value: ev.volume, date: ev.completedAt };
+    if (!timeBased && ev.workingVolume > 0 && (!bests.bestVolume || ev.workingVolume > bests.bestVolume.value)) {
+      bests.bestVolume = { value: ev.workingVolume, date: ev.completedAt };
+    }
   }
   bests.repsAtLoad = [...byLoad.entries()].map(([load, v]) => ({ load, ...v })).sort((a, b) => b.load - a.load);
   return bests;
@@ -82,15 +91,19 @@ export function detectPersonalRecords(prior: readonly SessionEvaluation[], curre
   }
   if (bestRepPr) out.push(bestRepPr);
 
-  const prevE1rm = Math.max(0, ...priorSets.map((s) => s.e1rm));
-  const bestSet = curSets.reduce((a, s) => (s.e1rm > a.e1rm ? s : a));
-  if (bestSet.e1rm > prevE1rm + 0.01 && prevE1rm > 0) {
-    out.push({ type: 'estimated-1rm', value: bestSet.e1rm, load: bestSet.load, reps: bestSet.reps, previousValue: prevE1rm });
+  const estimableNow = estimable(curSets);
+  const prevE1rm = Math.max(0, ...estimable(priorSets).map((s) => s.e1rm));
+  if (estimableNow.length > 0 && prevE1rm > 0) {
+    const bestSet = estimableNow.reduce((a, s) => (s.e1rm > a.e1rm ? s : a));
+    if (bestSet.e1rm > prevE1rm + 0.01) {
+      out.push({ type: 'estimated-1rm', value: bestSet.e1rm, load: bestSet.load, reps: bestSet.reps, previousValue: prevE1rm });
+    }
   }
 
-  const prevVolume = Math.max(0, ...prior.map((e) => e.volume));
-  if (current.volume > prevVolume + 0.01 && prevVolume > 0) {
-    out.push({ type: 'session-volume', value: current.volume, load: null, reps: null, previousValue: prevVolume });
+  // Working sets only: extra sets are more work, not a better performance.
+  const prevVolume = Math.max(0, ...prior.map((e) => e.workingVolume));
+  if (current.workingVolume > prevVolume + 0.01 && prevVolume > 0) {
+    out.push({ type: 'session-volume', value: current.workingVolume, load: null, reps: null, previousValue: prevVolume });
   }
   return out;
 }

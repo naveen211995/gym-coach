@@ -1,9 +1,22 @@
 import React, { useRef, useState } from 'react';
-import { DELOAD_STRATEGIES, EQUIPMENT_TYPES, MUSCLE_GROUPS, STRATEGIES, defaultIncrementFor, defaultProgression } from '../../domain/defaults';
+import {
+  DEFAULT_SPLIT,
+  DELOAD_STRATEGIES,
+  EQUIPMENT_TYPES,
+  MUSCLE_GROUPS,
+  STRATEGIES,
+  TARGET_RIR_GUIDANCE,
+  WEEKDAY_LABELS,
+  defaultIncrementFor,
+  defaultProgression,
+  hasSchedule,
+  scheduleOf,
+} from '../../domain/defaults';
 import { emptyDataset } from '../../domain/change';
 import { defaultSettings } from '../../domain/defaults';
-import type { Dataset, Exercise, MuscleGroup, ProgressionConfig, Unit } from '../../domain/types';
-import { RULES, RULE_DESCRIPTIONS } from '../../engine';
+import type { Dataset, Exercise, MuscleGroup, ProgressionConfig, Routine, RoutineDay, Unit } from '../../domain/types';
+import { WEEKDAYS } from '../../domain/types';
+import { RULES, RULE_DESCRIPTIONS, formatNumber, incrementFeasibility } from '../../engine';
 import { nextRecommendation } from '../../app/selectors';
 import * as S from '../../app/services';
 import { mergeDatasets, parseBackup, serializeBackup, toCsv, type ParseResult } from '../../storage/backup';
@@ -17,7 +30,7 @@ export function MoreMenu({ nav }: { nav: Nav }) {
   const { storage } = useStore();
   const items: { label: string; meta: string; route: Parameters<Nav['push']>[0] }[] = [
     { label: 'Exercise library', meta: 'Exercises and their progression settings', route: { name: 'library' } },
-    { label: 'Routine builder', meta: 'Days, exercise order and rotation', route: { name: 'routines' } },
+    { label: 'Routine builder', meta: 'Weekly schedule, days and exercise order', route: { name: 'routines' } },
     { label: 'Settings', meta: 'Units, readiness check-in, RIR confidence, theme', route: { name: 'settings' } },
     { label: 'Backup & restore', meta: 'Export JSON or CSV, import, reset', route: { name: 'backup' } },
     { label: 'How progression works', meta: 'Every rule the coach uses, with thresholds', route: { name: 'rules' } },
@@ -116,6 +129,9 @@ export function ExerciseEditor({ id, nav }: { id: string | null; nav: Nav }) {
   const errors = S.validateExerciseInput(ds, form, id ?? undefined);
   const hasHistory = id ? ds.exerciseSessions.some((s) => s.exerciseId === id) : false;
   const c = form.progression;
+  // The load the warning is judged at: what the coach would have you lift next,
+  // or the planned starting load for a brand-new exercise.
+  const refLoad = (existing ? nextRecommendation(ds, existing).target.load : null) ?? c.startingLoad ?? null;
   const tb = c.strategy === 'time-based';
   const setP = (patch: Partial<ProgressionConfig>) => setForm((f) => ({ ...f, progression: { ...f.progression, ...patch } }));
   const err = (k: string) => (touched && errors[k] ? <span className="err">{errors[k]}</span> : null);
@@ -213,6 +229,13 @@ export function ExerciseEditor({ id, nav }: { id: string | null; nav: Nav }) {
           <div className="field">
             <span className="label">Target RIR</span>
             <Chips label="Target RIR" value={c.targetRir} onChange={(v) => setP({ targetRir: v ?? 2 })} fill options={[0, 1, 2, 3, 4, 5].map((v) => ({ value: v, label: String(v) }))} />
+            <span className="small muted">
+              {c.targetRir > TARGET_RIR_GUIDANCE.heavyCompoundHigh
+                ? `RIR ${c.targetRir} stops a long way from failure, and sets that easy build less. RIR ${TARGET_RIR_GUIDANCE.low}-${TARGET_RIR_GUIDANCE.high} is the usual window.`
+                : c.targetRir > TARGET_RIR_GUIDANCE.high
+                  ? `Fine for heavy compound work; RIR ${TARGET_RIR_GUIDANCE.low}-${TARGET_RIR_GUIDANCE.high} is the usual window for growth.`
+                  : `RIR ${TARGET_RIR_GUIDANCE.low}-${TARGET_RIR_GUIDANCE.high} is the window where sets build the most per set.`}
+            </span>
           </div>
         )}
         <div className="field">
@@ -220,6 +243,7 @@ export function ExerciseEditor({ id, nav }: { id: string | null; nav: Nav }) {
           <Chips label="Load increment" value={c.loadIncrement} onChange={(v) => setP({ loadIncrement: v ?? 0 })} options={(form.unit === 'kg' ? [0, 0.5, 1, 1.25, 2.5, 5] : form.unit === 'plt' ? [0, 1, 2, 3] : [0, 1, 2.5, 5, 10]).map((v) => ({ value: v, label: String(v) }))} />
           <Stepper label="Custom increment" value={c.loadIncrement} onChange={(v) => setP({ loadIncrement: v ?? 0 })} step={form.unit === 'plt' ? 1 : form.unit === 'kg' ? 0.25 : 0.5} min={0} max={100} decimals={2} />
           {err('loadIncrement')}
+          <IncrementHint load={refLoad} progression={c} unit={form.unit} />
         </div>
         {tb && <Stepper label="Seconds added per progression" value={c.timeIncrementSeconds} onChange={(v) => setP({ timeIncrementSeconds: v ?? 5 })} step={1} min={1} max={120} integer />}
         <div className="two-col">
@@ -293,7 +317,7 @@ export function Routines({ nav }: { nav: Nav }) {
     if (!naming) return;
     const v = naming.value;
     if (naming.kind === 'routine-new') {
-      const res = await run((d, ctx) => S.createRoutine(d, v, ['Day 1'], ctx));
+      const res = await run((d, ctx) => S.createRoutine(d, v, DEFAULT_SPLIT.map((x) => ({ name: x.name, weekdays: x.weekdays })), ctx));
       if (res) setRoutineId(res.id);
     } else if (naming.kind === 'routine' && naming.id) await commit((d) => S.renameRoutine(d, naming.id as string, v));
     else if (naming.kind === 'day-new' && routine) await commit((d, ctx) => S.addRoutineDay(d, routine.id, v, ctx));
@@ -307,7 +331,7 @@ export function Routines({ nav }: { nav: Nav }) {
       <div className="stack">
         {!routine ? (
           <Empty title="No routines yet" action={<button className="btn primary" onClick={() => setNaming({ kind: 'routine-new', value: '' })}>Create a routine</button>}>
-            A routine is an ordered list of days. The coach rotates through them.
+            A routine is a set of workout days and the weekdays you do them on.
           </Empty>
         ) : (
           <>
@@ -331,6 +355,7 @@ export function Routines({ nav }: { nav: Nav }) {
                 </button>
               )}
             </div>
+            <WeeklySchedule routine={routine} onPick={setRoutineId} />
             {routine.dayIds.map((dayId, i) => {
               const day = ds.routineDays.find((d) => d.id === dayId);
               if (!day) return null;
@@ -390,6 +415,100 @@ export function Routines({ nav }: { nav: Nav }) {
         }}
       />
     </>
+  );
+}
+
+/**
+ * Warns when one load increment is coarser than the rep range can absorb — the
+ * thing that makes an exercise bounce between "increase" and "decrease". Uses
+ * the engine's own arithmetic so the UI never re-implements the rule.
+ */
+function IncrementHint({ load, progression, unit }: { load: number | null; progression: ProgressionConfig; unit: Unit }) {
+  if (load === null || !(load > 0)) return null;
+  const f = incrementFeasibility(load, progression);
+  if (!f) return null;
+  const step = `+${formatNumber(progression.loadIncrement)} ${unit} at ${formatNumber(load)} ${unit} is +${formatNumber(f.pct, 1)}%`;
+  if (!f.feasible) {
+    return (
+      <span className="err">
+        {step}, worth about {formatNumber(f.reps, 1)} reps &mdash; more than your {progression.minReps}&ndash;{progression.maxReps} range ({f.range} reps) can absorb. Use a
+        smaller increment, widen the range, or pick the rep-first strategy.
+      </span>
+    );
+  }
+  return (
+    <span className="small muted">
+      {step}, worth about {formatNumber(f.reps, 1)} reps of your {f.range}-rep range.
+    </span>
+  );
+}
+
+/**
+ * The weekly plan: one row per weekday, each pointing at a day of this routine
+ * or at rest. A routine with nothing assigned keeps the old rotation, and says
+ * so, with one tap to set up the default split.
+ */
+function WeeklySchedule({ routine, onPick }: { routine: Routine; onPick: (id: string) => void }) {
+  const { ds, commit, run, notify } = useStore();
+  const schedule = scheduleOf(routine);
+  const days = routine.dayIds.map((id) => ds.routineDays.find((d) => d.id === id)).filter((d): d is RoutineDay => Boolean(d));
+  const scheduled = hasSchedule(routine);
+  const missing = DEFAULT_SPLIT.filter((d) => !days.some((e) => e.name.trim().toLowerCase() === d.name.toLowerCase()));
+  // A routine holds at most 7 days. When the split will not fit, it goes into a
+  // new routine rather than asking the lifter to delete days first.
+  const fits = missing.length <= 7 - days.length;
+
+  const useSplit = async () => {
+    if (fits) {
+      const res = await run((d, ctx) => ({ change: S.applyDefaultSplit(d, routine.id, ctx).change }));
+      if (res) notify(missing.length ? `Added ${missing.map((m) => m.name).join(', ')}.` : 'Weekly schedule set.', 'success');
+      return;
+    }
+    const created = await run((d, ctx) => S.createRoutine(d, 'Push / Pull / Legs / Delts', DEFAULT_SPLIT.map((x) => ({ name: x.name, weekdays: x.weekdays })), ctx));
+    if (!created) return;
+    await commit((d, ctx) => S.updateSettings(d, { activeRoutineId: created.id }, ctx));
+    onPick(created.id);
+    notify('New routine created and made active. Your old routine is untouched.', 'success');
+  };
+
+  return (
+    <section className="card" aria-label="Weekly schedule">
+      <div className="spread" style={{ marginBottom: 4 }}>
+        <h3 style={{ margin: 0 }}>Weekly schedule</h3>
+      </div>
+      {!scheduled && (
+        <div className="banner info small">
+          No weekly schedule yet, so the coach just rotates through the days in order — which is why Home can keep showing the
+          same one. Pick a day for each weekday below, or set up the usual split in one tap.
+        </div>
+      )}
+      <div style={{ marginTop: 8 }}>
+        {WEEKDAYS.map((w) => {
+          const current = schedule[w];
+          return (
+            <div key={w} className={`sched-row ${current ? '' : 'rest'}`}>
+              <span className="wd">{WEEKDAY_LABELS[w].short}</span>
+              <Chips
+                label={WEEKDAY_LABELS[w].long}
+                value={current ?? '__rest'}
+                onChange={(v) => commit((d) => S.setRoutineSchedule(d, routine.id, w, v === '__rest' || v === null ? null : String(v)))}
+                options={[...days.map((d) => ({ value: d.id, label: d.name, className: 'text' })), { value: '__rest', label: 'Rest', className: 'text' }]}
+              />
+            </div>
+          );
+        })}
+      </div>
+      <button className="btn block small" style={{ marginTop: 10 }} onClick={useSplit}>
+        Use Mon Push / Tue Pull / Thu Legs / Fri Delts
+      </button>
+      <div className="small muted" style={{ marginTop: 6 }}>
+        {!fits
+          ? `This routine already holds ${days.length} days of the 7 allowed, so the split goes into a new routine and this one is left exactly as it is.`
+          : missing.length > 0
+            ? `Adds ${missing.map((m) => m.name).join(', ')} as empty days — nothing you have already built is changed.`
+            : 'Re-points the four weekday slots at those days; nothing is added or removed.'}
+      </div>
+    </section>
   );
 }
 
@@ -579,7 +698,7 @@ export function Backup({ nav }: { nav: Nav }) {
 export function RulesScreen({ nav }: { nav: Nav }) {
   const groups: { title: string; ids: string[] }[] = [
     { title: 'Checked first', ids: ['INVALID_CONFIG', 'BASELINE', 'NO_SETS_LOGGED', 'PAIN_REVIEW', 'RESUME_AFTER_DELOAD'] },
-    { title: 'Deloads', ids: ['DELOAD_STALL', 'DELOAD_REGRESSION'] },
+    { title: 'Deloads', ids: ['DELOAD_REGRESSION', 'DELOAD_RIR_REGRESSION', 'DELOAD_STALL'] },
     { title: 'Below the rep range', ids: ['C_OFF_DAY', 'C_FIRST_BELOW', 'C_REPEATED_BELOW', 'C_FAR_BELOW'] },
     { title: 'Top of the range', ids: ['E_TOP_LOW_RIR', 'A_MAX_LOAD', 'REP_FIRST_CONSOLIDATE', 'D_TOP_HIGH_RIR_BIG', 'A_TOP_OF_RANGE'] },
     { title: 'Inside the range', ids: ['D_HIGH_RIR_EARLY_INCREASE', 'INCOMPLETE_SESSION', 'E_LOW_RIR_HOLD', 'B_ADD_REPS_HIGH_RIR', 'B_ADD_REPS'] },
@@ -612,9 +731,15 @@ export function RulesScreen({ nav }: { nav: Nav }) {
           <ul className="reasons" style={{ color: 'var(--ink)' }}>
             <li>Top of range: every working set at the max reps; with 3+ sets one set may be {r.topToleranceReps} rep short. A single low set is treated as a one-off.</li>
             <li>RIR counts only when logged on at least {r.rirMinCoverage * 100}% of sets. Its weight is (confidence − 1) / 4, halved when inconsistent (a later set {r.rirInconsistentJump}+ RIR higher with no more reps, or a spread of {r.rirInconsistentSpread}+). Below {r.rirMinWeight * 100}% weight it is ignored.</li>
-            <li>"Well above/below target" means a weighted RIR difference of ±{r.rirSubstantiallyHigh}. A difference of {r.rirBigJump}+ at the top of the range earns two increments.</li>
+            <li>Reported RIR above {r.rirTaperFrom} is discounted by {r.rirTaperPerRep * 100}% per rep (never below {r.rirTaperFloor * 100}%): estimates get less accurate the further from failure a set stops. Oversized jumps are prevented by the cap below, not by distrusting you.</li>
+            <li>"Well above/below target" means a weighted RIR difference of ±{r.rirSubstantiallyHigh}. A difference of {r.rirBigJump}+ at the top of the range spends that surplus on load.</li>
+            <li>Load changes are judged as a percentage, not a fixed step. One rep is worth about {Math.round(1 / r.repsPerPercentLoad * 10) / 10}% of load, so a jump never exceeds {r.maxJumpPercent}% and never leaves a set predicted below your minimum reps. If one increment costs more reps than your range spans, the target says so instead of bouncing you up and down.</li>
+            <li>After a load change, rep targets are predicted from that same tradeoff rather than reset to the bottom of the range: +5% load means roughly 2 reps fewer, not a whole range.</li>
             <li>Below range means at least half the sets under the minimum. "Far below" is an average {r.farBelowMinReps}+ reps under it. Repeated below-range drops load {r.decreasePercent}% (at least one increment).</li>
-            <li>Trends use the last {r.trendWindow} sessions. A stall is a session with no load increase and no new rep best at that load; low-readiness and incomplete sessions are neutral. Two stalls warn, the exercise's stall setting (default 3) deloads. Two consecutive drops deload.</li>
+            <li>Trends use the last {r.trendWindow} sessions. Progress is a new rep best at that load, or the same reps with {r.capacityGainReps}+ more reps in reserve. A regression is reps falling by more than {r.regressionRepTolerance} at the same load, or the same reps coming {r.capacityDropReps}+ reps closer to failure. Low-readiness and incomplete sessions are neutral. Two stalls warn, the exercise's stall setting (default 3) deloads, and {r.regressionSessionsBeforeDeload} consecutive regressions deload sooner.</li>
+            <li>A reduce-load deload takes the deload percentage off the load and drops {r.deloadSetReduction} set (on exercises with {r.deloadMinSetsToReduce}+ sets) at +1 RIR, then full sets return. Shedding fatigue needs less work, not just lighter work.</li>
+            <li>Estimated 1RM uses reps + RIR, capped at {r.e1rmReliableMaxReps} reps: 100 x 10 at RIR 0 and at RIR 4 are not the same set, and the formula drifts badly on very high reps.</li>
+            <li>Mid-session: a set landing {r.autoregMissReps}+ reps under target at failure offers a lighter load for the sets that remain; {r.autoregBeatReps}+ reps over with RIR to spare offers more.</li>
             <li>Readiness (mean of readiness, energy and 6 − fatigue, minus a sleep penalty) at or below 2.75 postpones increases today; at or below 1.75 also removes a set and adds 1 RIR. It never changes the baseline.</li>
             <li>Significant pain: never increase, review/replace/skip. Mild pain: hold load and reps.</li>
           </ul>

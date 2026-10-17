@@ -19,7 +19,7 @@ import type {
   RecommendationFlag,
   TrendSnapshot,
 } from '../domain/types';
-import { clampInt, mean } from './metrics';
+import { clampInt, loadChangePercent, mean, predictRepsAtLoad } from './metrics';
 import { isLowReadiness } from './readiness';
 import { RULES } from './rules';
 import { evaluateSession, LOAD_EPS, type EngineExercise, type EvaluationOptions, type SessionEvaluation } from './sessionEval';
@@ -125,6 +125,97 @@ function increaseLoad(ctx: Ctx, increments: number): number {
   let next = addLoad(ctx.load, roundTo(c.loadIncrement * increments, 4));
   if (c.maxLoad !== null && next > c.maxLoad + LOAD_EPS) next = Math.max(ctx.load, c.maxLoad);
   return next;
+}
+
+export interface IncrementFeasibility {
+  /** One increment as a percentage of the load. */
+  pct: number;
+  /** Reps that percentage is expected to cost. */
+  reps: number;
+  /** Width of the configured rep range. */
+  range: number;
+  /** False when one increment costs more reps than the range spans. */
+  feasible: boolean;
+}
+
+/**
+ * How coarse one load increment is at a given load. Exported so the exercise
+ * editor can warn about it with the same arithmetic the engine uses, rather
+ * than repeating the rule in a component.
+ */
+export function incrementFeasibility(load: number, cfg: EngineExercise['progression']): IncrementFeasibility | null {
+  if (!(load > 0) || !(cfg.loadIncrement > 0)) return null;
+  let next = addLoad(load, cfg.loadIncrement);
+  if (cfg.maxLoad !== null && next > cfg.maxLoad) next = cfg.maxLoad;
+  const pct = loadChangePercent(load, next);
+  if (pct === null || pct <= 0) return null;
+  const reps = roundTo(pct * RULES.repsPerPercentLoad, 1);
+  const range = cfg.maxReps - cfg.minReps;
+  return { pct, reps, range, feasible: reps <= range + RULES.coarseIncrementSlackReps };
+}
+
+/** One increment as a percentage of the current load, and the reps it costs. */
+function incrementCost(ctx: Ctx): IncrementFeasibility | null {
+  return incrementFeasibility(ctx.load, ctx.exercise.progression);
+}
+
+/**
+ * How many increments to add. A plain earned increase is one increment; RIR
+ * surplus buys more, converted from reps to load through the load-rep tradeoff.
+ *
+ * Three ceilings apply, and the smallest wins: the surplus itself, a hard
+ * RULES.maxJumpPercent of the current load, and — the important one — the jump
+ * must leave every set still predicted to reach the minimum reps. Landing below
+ * your own rep range is what makes an engine bounce between "increase" and
+ * "decrease", so it is ruled out up front rather than corrected afterwards.
+ */
+function jumpIncrements(ctx: Ctx, surplusReps: number): number {
+  const c = ctx.exercise.progression;
+  const cost = incrementCost(ctx);
+  if (!cost || !(surplusReps > 0)) return 1;
+
+  const bySurplus = Math.max(1, Math.ceil(Math.min(RULES.maxJumpPercent, surplusReps / RULES.repsPerPercentLoad) / cost.pct));
+  const byCap = Math.max(1, Math.floor(RULES.maxJumpPercent / cost.pct));
+  const lowestReps = Math.min(...repTargetsFrom(ctx, 0));
+  let byRange = 1;
+  for (let n = 1; n <= Math.min(bySurplus, byCap); n++) {
+    const predicted = predictRepsAtLoad(lowestReps, ctx.load, increaseLoad(ctx, n));
+    if (predicted === null || predicted < c.minReps) break;
+    byRange = n;
+  }
+  return Math.max(1, Math.min(bySurplus, byCap, byRange));
+}
+
+/**
+ * Note how coarse this exercise's increment is. A jump the rep range cannot
+ * absorb is the real reason a lifter bounces between "increase" and "decrease",
+ * so it is called out rather than silently repeated.
+ */
+function incrementNotes(ctx: Ctx, newLoad: number): string[] {
+  const c = ctx.exercise.progression;
+  const cost = incrementCost(ctx);
+  const notes: string[] = [];
+  if (!cost) return notes;
+  const jumpPct = loadChangePercent(ctx.load, newLoad);
+  if (!cost.feasible) {
+    ctx.flags.add('coarse-increment');
+    notes.push(
+      `Heads up: +${formatNumber(c.loadIncrement)} ${ctx.exercise.unit} from ${fmtLoad(ctx.exercise, ctx.load)} is +${formatNumber(cost.pct, 1)}%, worth about ${formatNumber(cost.reps, 1)} reps — more than the ${c.minReps}–${c.maxReps} range (${cost.range} reps) can absorb. A smaller increment, a wider rep range, or the rep-first strategy would progress this exercise more smoothly.`,
+    );
+  } else if (jumpPct !== null && jumpPct > RULES.maxJumpPercent + 1e-9) {
+    ctx.flags.add('capped-jump');
+  }
+  return notes;
+}
+
+/**
+ * Per-set targets at a new load, predicted from the load-rep tradeoff instead of
+ * dropping to the bottom of the range: a +5% load increase costs about 2 reps,
+ * not the whole range, and under-prescribing wastes a session's stimulus.
+ */
+function repTargetsAfterLoadChange(ctx: Ctx, newLoad: number): number[] {
+  const c = ctx.exercise.progression;
+  return repTargetsFrom(ctx, 0).map((reps) => clampInt(predictRepsAtLoad(reps, ctx.load, newLoad) ?? c.minReps, c.minReps, c.maxReps));
 }
 
 /** Reduce by pct (at least one increment), snapped down to the increment, never below minLoad. */
@@ -236,24 +327,34 @@ function decideDeload(ctx: Ctx, cause: 'stall' | 'regression'): Draft {
   const { ev, exercise, trend } = ctx;
   const c = exercise.progression;
   const repeat = repTargetsFrom(ctx, 0);
-  const why =
-    cause === 'stall'
+  const rirDriven = cause === 'regression' && trend.regressionFromRir;
+  const why = rirDriven
+    ? `Same reps but steadily closer to failure over ${plural(trend.regressionCount, 'session')} (latest ${perfText(exercise, ev)}): the work is costing more than it did.`
+    : cause === 'stall'
       ? `No progress for ${plural(trend.stallCount, 'session')} in a row at ${fmtLoad(exercise, ctx.load)} (no load increase and no new rep best).`
       : `Performance dropped ${plural(trend.regressionCount, 'session')} in a row (latest ${perfText(exercise, ev)}).`;
   ctx.flags.add(cause === 'stall' ? 'stall' : 'regression');
-  const ruleId = cause === 'stall' ? 'DELOAD_STALL' : 'DELOAD_REGRESSION';
+  if (rirDriven) ctx.flags.add('rir-regression');
+  const ruleId = cause === 'stall' ? 'DELOAD_STALL' : rirDriven ? 'DELOAD_RIR_REGRESSION' : 'DELOAD_REGRESSION';
 
   if (c.deloadStrategy === 'reduce-load') {
     const newLoad = reduceLoad(ctx.load, c.deloadPercent, c);
     if (newLoad < ctx.load - LOAD_EPS) {
+      // Lighter load AND less volume: shedding fatigue is the point of a deload,
+      // and a 10% load cut on its own is barely an easier session.
+      const cut = c.workingSets >= RULES.deloadMinSetsToReduce ? RULES.deloadSetReduction : 0;
+      const sets = Math.max(1, c.workingSets - cut);
+      const rir = Math.min(5, c.targetRir + 1);
+      const reasons = [why, `Deload about ${formatNumber(c.deloadPercent)}% to ${fmtLoad(exercise, newLoad)} with similar reps; progression restarts from there.`];
+      if (cut > 0) reasons.push(`${plural(sets, 'set')} instead of ${c.workingSets} this session, at RIR ${formatNumber(rir)}. Full sets return next time.`);
       return {
         action: 'deload',
         ruleId,
         load: newLoad,
-        sets: c.workingSets,
-        repTargets: repeat,
-        targetRir: c.targetRir,
-        reasons: [why, `Deload about ${formatNumber(c.deloadPercent)}% to ${fmtLoad(exercise, newLoad)} with similar reps; progression restarts from there.`],
+        sets,
+        repTargets: repeat.slice(0, sets),
+        targetRir: rir,
+        reasons,
       };
     }
     ctx.flags.add('min-load-reached');
@@ -282,7 +383,6 @@ function decideRepRange(ctx: Ctx): Draft {
   const low = r.reliable && (r.effectiveDeviation ?? 0) <= RULES.rirSubstantiallyLow;
   const base = { sets: c.workingSets, targetRir: c.targetRir };
   const topTargets = fill(c.workingSets, c.maxReps);
-  const minTargets = fill(c.workingSets, c.minReps);
   const loadTxt = fmtLoad(exercise, ctx.load);
 
   if (ev.clearlyBelowMin) return decideBelowMin(ctx);
@@ -332,27 +432,40 @@ function decideRepRange(ctx: Ctx): Draft {
         };
       }
     }
+    const surplus = r.reliable ? Math.max(0, r.effectiveDeviation ?? 0) : 0;
     const big = r.reliable && (r.effectiveDeviation ?? 0) >= RULES.rirBigJump;
-    const newLoad = increaseLoad(ctx, big ? 2 : 1);
+    const increments = jumpIncrements(ctx, big ? surplus : 0);
+    const newLoad = increaseLoad(ctx, increments);
+    const targets = repTargetsAfterLoadChange(ctx, newLoad);
+    const jumpPct = loadChangePercent(ctx.load, newLoad);
     const reasons = [topLine, rirNote(ctx)];
     if (strategy === 'rep-first') reasons.push('Top of range held for two sessions in a row.');
-    if (big) reasons.push('Sets were far from failure, so the jump is two increments.');
-    reasons.push(`New load ${fmtLoad(exercise, newLoad)}; reps restart at ${c.minReps} and build back up.`);
-    return { ...base, action: 'increase-load', ruleId: big ? 'D_TOP_HIGH_RIR_BIG' : 'A_TOP_OF_RANGE', load: newLoad, repTargets: minTargets, reasons };
+    if (big && increments > 1) {
+      reasons.push(`About ${formatNumber(surplus, 1)} reps were still in reserve, worth roughly ${formatNumber(surplus / RULES.repsPerPercentLoad, 0)}% more load, so the jump is ${plural(increments, 'increment')}.`);
+    } else if (big) {
+      reasons.push('Sets were far from failure, but one increment is already a big enough jump here.');
+    }
+    reasons.push(
+      `New load ${fmtLoad(exercise, newLoad)}${jumpPct === null ? '' : ` (+${formatNumber(jumpPct, 1)}%)`}; expect about ${fmtReps(exercise, targets)} there, then build back to ${c.maxReps}.`,
+    );
+    reasons.push(...incrementNotes(ctx, newLoad));
+    return { ...base, action: 'increase-load', ruleId: big && increments > 1 ? 'D_TOP_HIGH_RIR_BIG' : 'A_TOP_OF_RANGE', load: newLoad, repTargets: targets, reasons };
   }
 
   if (high && strategy !== 'rep-first' && ev.majorityTop && ev.missingCount === 0 && ev.belowMinCount === 0 && canIncrease(ctx)) {
     const newLoad = increaseLoad(ctx, 1);
+    const targets = repTargetsAfterLoadChange(ctx, newLoad);
     return {
       ...base,
       action: 'increase-load',
       ruleId: 'D_HIGH_RIR_EARLY_INCREASE',
       load: newLoad,
-      repTargets: minTargets,
+      repTargets: targets,
       reasons: [
         `${ev.topCount} of ${ev.plannedSets} sets hit ${c.maxReps} reps and RIR was well above target: ${perf}.`,
         rirNote(ctx),
-        `That margin says ${loadTxt} is light. Move to ${fmtLoad(exercise, newLoad)} now; reps restart at ${c.minReps}.`,
+        `That margin says ${loadTxt} is light. Move to ${fmtLoad(exercise, newLoad)} now; expect about ${fmtReps(exercise, targets)} there.`,
+        ...incrementNotes(ctx, newLoad),
       ],
     };
   }
@@ -423,18 +536,27 @@ function decideLoadFirst(ctx: Ctx): Draft {
       return { ...base, action: 'maintain', ruleId: 'A_MAX_LOAD', load: ctx.load, repTargets: minTargets, reasons: [`Every set reached ${c.minReps} reps: ${perf}.`, "Load can't go higher (maximum load or no increment). Add reps or a harder variation."] };
     }
     const allTop = ev.topCount >= ev.plannedSets;
+    const surplus = Math.max(allTop ? c.maxReps - c.minReps : 0, r.reliable ? Math.max(0, r.effectiveDeviation ?? 0) : 0);
     const big = allTop || (r.reliable && (r.effectiveDeviation ?? 0) >= RULES.rirBigJump);
-    const newLoad = increaseLoad(ctx, big ? 2 : 1);
+    const increments = jumpIncrements(ctx, big ? surplus : 0);
+    const newLoad = increaseLoad(ctx, increments);
+    const targets = repTargetsAfterLoadChange(ctx, newLoad);
+    const jumpPct = loadChangePercent(ctx.load, newLoad);
+    const pctText = jumpPct === null ? '' : ` (+${formatNumber(jumpPct, 1)}%)`;
     return {
       ...base,
       action: 'increase-load',
       ruleId: 'LF_MIN_REACHED',
       load: newLoad,
-      repTargets: minTargets,
+      repTargets: targets,
       reasons: [
         `Load-first: every set reached at least ${c.minReps} reps: ${perf}.`,
         rirNote(ctx),
-        big ? `Well past the minimum, so add two increments: ${fmtLoad(exercise, newLoad)}.` : `Add ${formatNumber(c.loadIncrement)} ${exercise.unit}: ${fmtLoad(exercise, newLoad)} × ${c.minReps}.`,
+        increments > 1
+          ? `Well clear of the minimum, so add ${plural(increments, 'increment')}: ${fmtLoad(exercise, newLoad)}${pctText}.`
+          : `Add ${formatNumber(c.loadIncrement)} ${exercise.unit}: ${fmtLoad(exercise, newLoad)}${pctText}.`,
+        `Expect about ${fmtReps(exercise, targets)} at the new load.`,
+        ...incrementNotes(ctx, newLoad),
       ],
     };
   }
@@ -647,10 +769,12 @@ export function recommendNext(input: EngineInput): EngineResult {
       targetRir: c.targetRir,
       reasons: ['Last session was a reduced-volume deload.', `Return to ${plural(c.workingSets, 'set')} at ${fmtLoad(exercise, load)} with your pre-deload reps.`],
     };
-  } else if (!isTime(exercise) && c.deloadStrategy !== 'none' && trend.stallCount >= c.stallSessionsBeforeDeload) {
-    draft = decideDeload(ctx, 'stall');
+    // Regression is checked before stall: both end in a deload, but "you are
+    // getting weaker at this load" is the sharper explanation of the two.
   } else if (!isTime(exercise) && c.deloadStrategy !== 'none' && trend.regressionCount >= RULES.regressionSessionsBeforeDeload) {
     draft = decideDeload(ctx, 'regression');
+  } else if (!isTime(exercise) && c.deloadStrategy !== 'none' && trend.stallCount >= c.stallSessionsBeforeDeload) {
+    draft = decideDeload(ctx, 'stall');
   } else if (c.strategy === 'load-first') {
     draft = decideLoadFirst(ctx);
   } else if (c.strategy === 'time-based') {

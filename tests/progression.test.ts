@@ -43,13 +43,14 @@ describe('normal progression', () => {
 });
 
 describe('top-of-range progression', () => {
-  it('adds one increment and resets reps when every set hits the top at target RIR', () => {
+  it('adds one increment and predicts the reps the new load should allow', () => {
     const r = run(hist('135x12@2, 135x12@2, 135x12@2'));
     expect(r.ruleId).toBe('A_TOP_OF_RANGE');
     expect(r.action).toBe('increase-load');
     expect(r.direction).toBe('up');
     expect(r.target.load).toBe(140);
-    expect(r.target.repTargets).toEqual([8, 8, 8]);
+    // +5 lb on 135 is +3.7%, which costs about 1.5 reps -- not the whole range.
+    expect(r.target.repTargets).toEqual([11, 11, 11]);
   });
   it('tolerates one set being a single rep short (rule F)', () => {
     const r = run(hist('135x12@2, 135x12@2, 135x11@2'));
@@ -124,7 +125,7 @@ describe('high-RIR performance', () => {
     const r = run(hist('135x12@4c5, 135x12@4c5, 135x10@4c5'));
     expect(r.ruleId).toBe('D_HIGH_RIR_EARLY_INCREASE');
     expect(r.target.load).toBe(140);
-    expect(r.target.repTargets).toEqual([8, 8, 8]);
+    expect(r.target.repTargets).toEqual([11, 11, 9]); // predicted per set from 12/12/10
   });
 });
 
@@ -219,7 +220,8 @@ describe('plateau, regression and deload', () => {
     expect(r.trend.label).toBe('regressing');
     expect(r.ruleId).toBe('DELOAD_REGRESSION');
     expect(r.target.load).toBe(120); // 135 × 0.9 = 121.5 → floored to 120
-    expect(r.target.repTargets).toEqual([9, 8, 8]);
+    expect(r.target.sets).toBe(2); // a deload sheds volume as well as load
+    expect(r.target.repTargets).toEqual([9, 8]);
     expect(r.flags).toContain('regression');
   });
   it('a single dip does not trigger anything', () => {
@@ -267,7 +269,7 @@ describe('decimal load increments', () => {
   it('kg 2.5 increments', () => {
     const r = run(hist(['57.5x12@2, 57.5x12@2, 57.5x12@2', { unit: 'kg' }]), ex({ loadIncrement: 2.5 }, { unit: 'kg' }));
     expect(r.target.load).toBe(60);
-    expect(r.summary).toBe('Increase to 60 kg × 8/8/8');
+    expect(r.summary).toBe('Increase to 60 kg × 10/10/10');
   });
   it('1.25 increments without float noise', () => {
     const r = run(hist(['18.75x12@2, 18.75x12@2, 18.75x12@2', { unit: 'kg' }]), ex({ loadIncrement: 1.25 }, { unit: 'kg' }));
@@ -313,17 +315,17 @@ describe('different rep ranges and set counts', () => {
   it('5–8 range', () => {
     const r = run(hist('225x8@2, 225x8@2, 225x8@2'), ex({ minReps: 5, maxReps: 8 }));
     expect(r.target.load).toBe(230);
-    expect(r.target.repTargets).toEqual([5, 5, 5]);
+    expect(r.target.repTargets).toEqual([7, 7, 7]); // +2.2% costs about 1 rep
   });
   it('15–20 range', () => {
     const r = run(hist('50x20@2, 50x20@2, 50x19@2'), ex({ minReps: 15, maxReps: 20 }));
     expect(r.target.load).toBe(55);
-    expect(r.target.repTargets).toEqual([15, 15, 15]);
+    expect(r.target.repTargets).toEqual([16, 16, 15]); // +10% costs about 4 reps
   });
   it('1 set', () => {
     const r = run(hist(['135x12@2', { prescribedSets: 1 }]), ex({ workingSets: 1 }));
     expect(r.ruleId).toBe('A_TOP_OF_RANGE');
-    expect(r.target.repTargets).toEqual([8]);
+    expect(r.target.repTargets).toEqual([11]);
   });
   it('2 sets get no one-rep tolerance', () => {
     const r = run(hist(['135x12@2, 135x11@2', { prescribedSets: 2 }]), ex({ workingSets: 2 }));

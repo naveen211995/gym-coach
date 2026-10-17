@@ -66,7 +66,7 @@ describe('workout lifecycle', () => {
     apply(w.change);
     const es = sessionsForWorkout(ds, w.workoutId)[0]!;
     expect(es.prescribed.load).toBe(140);
-    expect(es.prescribed.repTargets).toEqual([8, 8, 8]);
+    expect(es.prescribed.repTargets).toEqual([11, 11, 11]);
     expect(es.prescribed.recommendationId).toBe(first.rec?.id);
     expect(es.sets.every((s) => s.status === 'pending')).toBe(true);
   });

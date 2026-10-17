@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
-import { formatNumber, PR_LABELS } from '../../engine';
-import { exerciseStats, nextRecommendation } from '../../app/selectors';
+import { VOLUME_BAND, formatNumber, PR_LABELS, RULES } from '../../engine';
+import { exerciseStats, nextRecommendation, volumeFor } from '../../app/selectors';
+import { MUSCLE_GROUPS } from '../../domain/defaults';
 import { Empty, Icon, LineChart, Segmented, TopBar, type ChartPoint } from '../components';
 import { cap, dayLabel, isTimeBased } from '../format';
 import { useStore } from '../store';
@@ -8,6 +9,72 @@ import type { Nav } from '../App';
 import { prValue } from './Home';
 
 type Metric = 'e1rm' | 'topLoad' | 'volume' | 'totalReps';
+
+const GROUP_LABEL = new Map(MUSCLE_GROUPS.map((m) => [m.value, m.label]));
+
+/**
+ * Sets per muscle group per week. Weekly sets is the dose variable with the
+ * strongest evidence behind it for growth, and nothing else in the app shows
+ * whether the routine actually delivers them.
+ */
+function WeeklyVolume() {
+  const { ds } = useStore();
+  const [weeks, setWeeks] = useState<1 | 4>(1);
+  const report = volumeFor(ds, new Date().toISOString(), weeks);
+  const perWeek = (n: number) => n / report.weeks;
+  const max = Math.max(VOLUME_BAND.high, ...report.entries.map((e) => perWeek(e.hardSets)));
+
+  return (
+    <>
+      <h2 className="section">Weekly volume by muscle group</h2>
+      <Segmented
+        label="Window"
+        value={String(weeks)}
+        onChange={(v) => setWeeks(v === '4' ? 4 : 1)}
+        options={[
+          { value: '1', label: 'Last 7 days' },
+          { value: '4', label: 'Last 4 weeks' },
+        ]}
+      />
+      {report.entries.length === 0 ? (
+        <div className="card small muted">Nothing logged in this window.</div>
+      ) : (
+        <section className="card" aria-label="Weekly sets per muscle group">
+          {report.entries.map((e) => (
+            <div key={e.muscleGroup} className={`vol-row ${e.level}`}>
+              <strong>{GROUP_LABEL.get(e.muscleGroup) ?? e.muscleGroup}</strong>
+              <span className="small muted">
+                {formatNumber(perWeek(e.hardSets), 1)} sets/week
+                {e.sets !== e.hardSets ? ` (of ${formatNumber(perWeek(e.sets), 1)} logged)` : ''}
+                {' · '}
+                {formatNumber(perWeek(e.sessions), 1)}x/week
+              </span>
+              <span className="bar-track">
+                <span className="bar-fill" style={{ width: `${Math.min(100, (perWeek(e.hardSets) / max) * 100)}%` }} />
+              </span>
+              {(e.level === 'low' || e.lowFrequency) && (
+                <span className="small muted" style={{ gridColumn: '1 / -1' }}>
+                  {e.level === 'low' ? `Under ${VOLUME_BAND.low} hard sets a week. ` : ''}
+                  {e.lowFrequency ? `Trained ${e.sessions === 1 ? 'once' : `${e.sessions} times`} in this window; twice a week makes the volume easier to fit. ` : ''}
+                </span>
+              )}
+              {e.level === 'high' && (
+                <span className="small muted" style={{ gridColumn: '1 / -1' }}>
+                  Over {VOLUME_BAND.high} hard sets a week. More is not automatically better once recovery is the limit.
+                </span>
+              )}
+            </div>
+          ))}
+          <div className="small muted" style={{ marginTop: 8 }}>
+            Counts working sets finished within {RULES.hardSetMaxRir} reps of failure, {VOLUME_BAND.low}&ndash;{VOLUME_BAND.high} a week being the usual
+            productive band. Each exercise counts towards its one muscle group only, so a bench press adds nothing to triceps
+            or shoulders here.
+          </div>
+        </section>
+      )}
+    </>
+  );
+}
 
 export function ProgressScreen({ nav }: { nav: Nav }) {
   const { ds } = useStore();
@@ -92,6 +159,8 @@ export function ProgressScreen({ nav }: { nav: Nav }) {
             </div>
           </>
         )}
+
+        <WeeklyVolume />
 
         <h2 className="section">All exercises: 3-session trend</h2>
         <div className="list">

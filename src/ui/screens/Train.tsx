@@ -1,12 +1,12 @@
 import React, { useEffect, useState } from 'react';
-import { PR_LABELS, assessReadiness, formatNumber } from '../../engine';
+import { PR_LABELS, assessReadiness, autoregulateRemaining, formatNumber } from '../../engine';
 import type { Dataset, Exercise, ExerciseSession, PainLevel, SetPerformance, WorkoutSession } from '../../domain/types';
 import {
   activeRoutineDays,
   byId,
   lastCompletedSession,
   nextRecommendation,
-  nextRoutineDay,
+  plannedWorkout,
   readinessForWorkout,
   recommendationAfter,
   sessionsForWorkout,
@@ -15,20 +15,34 @@ import {
 import * as S from '../../app/services';
 import { emptyChange } from '../../domain/change';
 import { ActionTag, Chips, Confirm, Empty, Icon, Sheet, Stepper, TargetPlate, TopBar, toneOf } from '../components';
-import { ACTION_META, dayLabel, durationText, isBodyweight, isTimeBased, loadText, performanceText, repsText, setText } from '../format';
+import { ACTION_META, dayLabel, durationText, isBodyweight, isTimeBased, loadText, mmss, performanceText, repsText, setText } from '../format';
 import { vibrate } from '../platform';
 import { useStore } from '../store';
+import { WEEKDAY_LABELS } from '../../domain/defaults';
+import type { PlannedWorkout } from '../../app/selectors';
 import type { Nav } from '../App';
 
 // ───────────────────────── start ─────────────────────────
 
 const SCALE = [1, 2, 3, 4, 5].map((v) => ({ value: v, label: String(v) }));
 
-export function StartWorkout({ nav }: { nav: Nav }) {
+/** Why this day is pre-selected, in one line. */
+function planSubtitle(planned: PlannedWorkout): string | undefined {
+  const today = WEEKDAY_LABELS[planned.weekday].long;
+  if (planned.source === 'rotation') return planned.day ? `Next in your rotation: ${planned.day.name}` : undefined;
+  if (planned.day) return `${today}: ${planned.day.name}`;
+  if (planned.next) return `${today} is a rest day. Next up: ${planned.next.day.name} (${WEEKDAY_LABELS[planned.next.weekday].long})`;
+  return `${today} is a rest day`;
+}
+
+export function StartWorkout({ nav, dayId: preselected = null }: { nav: Nav; dayId?: string | null }) {
   const { ds, run } = useStore();
   const days = activeRoutineDays(ds);
-  const suggested = nextRoutineDay(ds);
-  const [dayId, setDayId] = useState<string | null>(suggested?.id ?? null);
+  const planned = plannedWorkout(ds);
+  // A day handed over from Home wins; otherwise today's schedule, and on a rest
+  // day the next workout that is scheduled.
+  const suggested = planned.day ?? planned.next?.day ?? null;
+  const [dayId, setDayId] = useState<string | null>(preselected ?? suggested?.id ?? null);
   const [checkIn, setCheckIn] = useState(false);
   const [r, setR] = useState<{ readiness: number | null; energy: number | null; fatigue: number | null; sleepHours: number | null; pain: boolean }>({ readiness: null, energy: null, fatigue: null, sleepHours: null, pain: false });
   const day = days.find((d) => d.id === dayId) ?? null;
@@ -55,7 +69,7 @@ export function StartWorkout({ nav }: { nav: Nav }) {
 
   return (
     <>
-      <TopBar title="Start workout" sub={suggested ? `Next in your rotation: ${suggested.name}` : undefined} />
+      <TopBar title="Start workout" sub={planSubtitle(planned)} />
       <div className="stack">
         {days.length > 0 && (
           <Chips
@@ -162,11 +176,24 @@ export function ActiveWorkout({ workout, nav }: { workout: WorkoutSession; nav: 
   const done = sessions.filter((s) => s.status === 'completed').length;
   const pendingCount = sessions.filter((s) => s.status === 'pending' || s.status === 'in-progress').length;
 
-  const openNext = (afterId: string) => {
+  /**
+   * The next exercise still to do: the first unfinished one after this card, or
+   * failing that the first unfinished one anywhere — so an exercise you jumped
+   * over earlier is picked up rather than lost.
+   */
+  const nextUnfinished = (afterId: string): ExerciseSession | null => {
     const list = sessionsForWorkout(ds, workout.id);
     const i = list.findIndex((s) => s.id === afterId);
-    const next = list.slice(i + 1).find((s) => s.status === 'pending' || s.status === 'in-progress') ?? list.find((s) => s.status === 'pending' || s.status === 'in-progress');
+    const open = (x: ExerciseSession) => x.status === 'pending' || x.status === 'in-progress';
+    return list.slice(i + 1).find(open) ?? list.find(open) ?? null;
+  };
+
+  const openNext = (afterId: string) => {
+    const next = nextUnfinished(afterId);
     setOpenId(next?.id ?? null);
+    // Opening a card that is off screen looks like nothing happened, and the
+    // card you just finished is still what you are looking at.
+    if (next) scrollCardIntoView(next.id);
   };
 
   const finish = async () => {
@@ -203,8 +230,26 @@ export function ActiveWorkout({ workout, nav }: { workout: WorkoutSession; nav: 
         {sessions.map((es) => {
           const ex = exercises.get(es.exerciseId);
           if (!ex) return null;
-          return <ExerciseCard key={es.id} es={es} exercise={ex} workout={workout} open={openId === es.id} onToggle={() => setOpenId(openId === es.id ? null : es.id)} onNext={() => openNext(es.id)} onOpen={setOpenId} />;
+          const upNext = nextUnfinished(es.id);
+          return (
+            <ExerciseCard
+              key={es.id}
+              es={es}
+              exercise={ex}
+              workout={workout}
+              open={openId === es.id}
+              nextName={upNext ? (exercises.get(upNext.exerciseId)?.name ?? null) : null}
+              onToggle={() => setOpenId(openId === es.id ? null : es.id)}
+              onNext={() => openNext(es.id)}
+              onOpen={setOpenId}
+            />
+          );
         })}
+        {sessions.length > 0 && pendingCount === 0 && (
+          <div className="banner info" role="status">
+            Every exercise is done. Finish the workout to save it and get your next targets.
+          </div>
+        )}
         <button className="btn block" onClick={() => setAdding(true)}>
           <Icon name="plus" /> Add exercise
         </button>
@@ -290,7 +335,37 @@ function ExercisePicker({ ds, exclude, onPick, prefer }: { ds: Dataset; exclude:
 
 const performed = (s: SetPerformance) => s.status === 'completed' || s.status === 'failed';
 
-function ExerciseCard({ es, exercise, workout, open, onToggle, onNext, onOpen }: { es: ExerciseSession; exercise: Exercise; workout: WorkoutSession; open: boolean; onToggle: () => void; onNext: () => void; onOpen: (id: string) => void }) {
+/** Bring a card to the top of the viewport, clear of the sticky header. */
+function scrollCardIntoView(sessionId: string) {
+  requestAnimationFrame(() => {
+    const el = document.getElementById(`ex-card-${sessionId}`);
+    if (!el) return;
+    const reduce = typeof window.matchMedia === 'function' && window.matchMedia('(prefers-reduced-motion: reduce)').matches;
+    const top = el.getBoundingClientRect().top + window.scrollY - 64;
+    window.scrollTo({ top: Math.max(0, top), behavior: reduce ? 'auto' : 'smooth' });
+  });
+}
+
+function ExerciseCard({
+  es,
+  exercise,
+  workout,
+  open,
+  nextName,
+  onToggle,
+  onNext,
+  onOpen,
+}: {
+  es: ExerciseSession;
+  exercise: Exercise;
+  workout: WorkoutSession;
+  open: boolean;
+  /** Name of the next unfinished exercise, for the "Next: ..." button. */
+  nextName: string | null;
+  onToggle: () => void;
+  onNext: () => void;
+  onOpen: (id: string) => void;
+}) {
   const { ds, commit, run, notify } = useStore();
   const tb = isTimeBased(exercise);
   const sets = [...es.sets].sort((a, b) => a.index - b.index);
@@ -298,10 +373,30 @@ function ExerciseCard({ es, exercise, workout, open, onToggle, onNext, onOpen }:
   const firstPending = sets.find((s) => s.status === 'pending')?.index ?? null;
   const [selected, setSelected] = useState<number | null>(firstPending);
   const [replacing, setReplacing] = useState(false);
+  // Rest since the last logged set. Live-only on purpose: a rest timer matters
+  // in the moment, and set timestamps are not part of the saved record.
+  const [restSince, setRestSince] = useState<number | null>(null);
+  const [restNow, setRestNow] = useState(() => Date.now());
+  /** Load the lifter accepted from an in-session suggestion, for the pending sets. */
+  const [suggestedLoad, setSuggestedLoad] = useState<number | null>(null);
+  useEffect(() => {
+    if (restSince === null) return;
+    const t = setInterval(() => setRestNow(Date.now()), 1000);
+    return () => clearInterval(t);
+  }, [restSince]);
   const [noteOpen, setNoteOpen] = useState(es.note.length > 0);
   useEffect(() => {
     if (selected === null || !sets.some((s) => s.index === selected)) setSelected(firstPending);
   }, [firstPending, sets.length]); // eslint-disable-line react-hooks/exhaustive-deps
+
+  const autoreg =
+    es.status === 'completed' || es.status === 'skipped'
+      ? null
+      : autoregulateRemaining({
+          exercise,
+          prescribed: { load: es.prescribed.load, repTargets: es.prescribed.repTargets, targetRir: es.prescribed.targetRir },
+          sets: sets.map((x) => ({ index: x.index, load: x.load, reps: x.reps, rir: x.rir, status: x.status })),
+        });
 
   const last = lastCompletedSession(ds, exercise.id, workout.startedAt);
   const rec = es.status === 'completed' ? recommendationAfter(ds, es.id) : null;
@@ -328,6 +423,7 @@ function ExerciseCard({ es, exercise, workout, open, onToggle, onNext, onOpen }:
     const ok = await commit((d) => S.logSet(d, es.id, index, input));
     if (!ok) return;
     vibrate();
+    setRestSince(Date.now());
     const nextPending = sets.find((s) => s.status === 'pending' && s.index !== index)?.index ?? null;
     setSelected(nextPending);
     await afterSetChange();
@@ -350,7 +446,7 @@ function ExerciseCard({ es, exercise, workout, open, onToggle, onNext, onOpen }:
   };
 
   return (
-    <article className={`ex-card ${es.status === 'completed' ? 'done' : ''}`}>
+    <article id={`ex-card-${es.id}`} className={`ex-card ${es.status === 'completed' ? 'done' : ''}`}>
       <button className="ex-head" onClick={onToggle} aria-expanded={open}>
         <span className={`status-dot ${statusDot}`} aria-hidden>
           {es.status === 'completed' ? <Icon name="check" size={16} /> : es.status === 'skipped' ? '–' : `${loggedCount}/${sets.length}`}
@@ -378,7 +474,7 @@ function ExerciseCard({ es, exercise, workout, open, onToggle, onNext, onOpen }:
               )}
             </div>
           ) : es.status === 'completed' && rec ? (
-            <CompletedView es={es} exercise={exercise} recSummary={rec} prs={prs} onNext={onNext} onEdit={() => commit((d) => S.reopenExercise(d, es.id))} onPain={setPain} />
+            <CompletedView es={es} exercise={exercise} recSummary={rec} prs={prs} nextName={nextName} onNext={onNext} onEdit={() => commit((d) => S.reopenExercise(d, es.id))} onPain={setPain} />
           ) : (
             <>
               {p.action === 'review' && (
@@ -405,6 +501,34 @@ function ExerciseCard({ es, exercise, workout, open, onToggle, onNext, onOpen }:
                 {last?.pain && last.pain !== 'none' ? `, ${last.pain} pain` : ''}
               </div>
 
+              {restSince !== null && (
+                <div className="rest-timer" role="status">
+                  <Icon name="clock" size={18} />
+                  <strong>Rest {mmss(restNow - restSince)}</strong>
+                  <span className="small muted grow">2-3 min on big lifts keeps reps up; 1-2 min is fine on smaller ones.</span>
+                  <button className="linkish small" onClick={() => setRestSince(null)}>
+                    Hide
+                  </button>
+                </div>
+              )}
+
+              {autoreg && (
+                <div className="banner warn small" role="status">
+                  <strong>{autoreg.summary}.</strong> {autoreg.reason}
+                  <div className="btn-row" style={{ marginTop: 8 }}>
+                    <button
+                      className="btn small"
+                      onClick={() => {
+                        setSuggestedLoad(autoreg.load);
+                        vibrate();
+                      }}
+                    >
+                      <Icon name={autoreg.action === 'add-load' ? 'up' : 'down'} size={16} /> Use {loadText(autoreg.load, exercise.unit)}
+                    </button>
+                  </div>
+                </div>
+              )}
+
               <div className="sets" role="list" aria-label="Sets">
                 {sets.map((s) => (
                   <button
@@ -426,10 +550,11 @@ function ExerciseCard({ es, exercise, workout, open, onToggle, onNext, onOpen }:
 
               {selected !== null && sets.some((s) => s.index === selected) && (
                 <SetEditor
-                  key={`${es.id}-${selected}-${sets.find((s) => s.index === selected)?.status}`}
+                  key={`${es.id}-${selected}-${sets.find((s) => s.index === selected)?.status}-${suggestedLoad ?? ''}`}
                   es={es}
                   exercise={exercise}
                   index={selected}
+                  suggestedLoad={suggestedLoad}
                   askConfidence={ds.settings.askRirConfidence}
                   onLog={(input) => logSet(selected, input)}
                   onSkip={() => skipSet(selected)}
@@ -515,7 +640,26 @@ function NoteField({ initial, onSave }: { initial: string; onSave: (s: string) =
   );
 }
 
-function SetEditor({ es, exercise, index, askConfidence, onLog, onSkip, onClear }: { es: ExerciseSession; exercise: Exercise; index: number; askConfidence: boolean; onLog: (i: S.SetInput) => void; onSkip: () => void; onClear: () => void }) {
+function SetEditor({
+  es,
+  exercise,
+  index,
+  suggestedLoad,
+  askConfidence,
+  onLog,
+  onSkip,
+  onClear,
+}: {
+  es: ExerciseSession;
+  exercise: Exercise;
+  index: number;
+  /** Load accepted from an in-session suggestion; wins over the prescribed load. */
+  suggestedLoad: number | null;
+  askConfidence: boolean;
+  onLog: (i: S.SetInput) => void;
+  onSkip: () => void;
+  onClear: () => void;
+}) {
   const tb = isTimeBased(exercise);
   const bw = isBodyweight(exercise);
   const sets = [...es.sets].sort((a, b) => a.index - b.index);
@@ -523,7 +667,7 @@ function SetEditor({ es, exercise, index, askConfidence, onLog, onSkip, onClear 
   const prevLogged = sets.filter((s) => s.index < index && performed(s)).pop();
   const p = es.prescribed;
   const isLogged = performed(current);
-  const defaultLoad = isLogged ? current.load : (prevLogged?.load ?? p.load ?? (bw ? null : null));
+  const defaultLoad = isLogged ? current.load : (suggestedLoad ?? prevLogged?.load ?? p.load ?? null);
   const defaultReps = isLogged ? current.reps : (p.repTargets[index] ?? p.repTargets[p.repTargets.length - 1] ?? exercise.progression.minReps);
   const [load, setLoad] = useState<number | null>(defaultLoad);
   const [reps, setReps] = useState<number | null>(defaultReps);
@@ -600,6 +744,7 @@ function CompletedView({
   exercise,
   recSummary,
   prs,
+  nextName,
   onNext,
   onEdit,
   onPain,
@@ -608,6 +753,7 @@ function CompletedView({
   exercise: Exercise;
   recSummary: NonNullable<ReturnType<typeof recommendationAfter>>;
   prs: Dataset['personalRecords'];
+  nextName: string | null;
   onNext: () => void;
   onEdit: () => void;
   onPain: (p: PainLevel) => void;
@@ -665,9 +811,13 @@ function CompletedView({
         <button className="btn" onClick={onEdit}>
           <Icon name="edit" size={18} /> Edit sets
         </button>
-        <button className="btn primary" onClick={onNext}>
-          Next exercise <Icon name="chevron" size={18} />
-        </button>
+        {nextName ? (
+          <button className="btn primary" onClick={onNext}>
+            Next: {nextName} <Icon name="chevron" size={18} />
+          </button>
+        ) : (
+          <span className="small muted" style={{ alignSelf: 'center' }}>Last one. Finish the workout to save it.</span>
+        )}
       </div>
     </div>
   );

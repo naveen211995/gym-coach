@@ -16,7 +16,19 @@ describe('JSON backup', () => {
     expect(parsed.schemaVersion).toBe(SCHEMA_VERSION);
     expect(parsed.warnings).toEqual([]);
     expect(parsed.dataset).toEqual(seed);
-    expect(JSON.parse(text).schemaVersion).toBe(1);
+    expect(JSON.parse(text).schemaVersion).toBe(SCHEMA_VERSION);
+  });
+  it('migrates a schema 1 backup, which has no weekly schedule', () => {
+    const file = JSON.parse(serializeBackup(seed, NOW));
+    file.schemaVersion = 1;
+    for (const r of file.data.routines) delete r.schedule;
+    const parsed = parseBackup(JSON.stringify(file), NOW);
+    expect(parsed.ok).toBe(true);
+    if (!parsed.ok) return;
+    expect(parsed.warnings).toEqual([]);
+    // Every weekday starts as rest, so the app keeps rotating until one is set.
+    expect(parsed.dataset.routines[0]?.schedule).toEqual({ mon: null, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null });
+    expect(parsed.dataset.exerciseSessions.length).toBe(seed.exerciseSessions.length);
   });
   it('rejects non-JSON, foreign files and newer schemas', () => {
     expect(parseBackup('nope', NOW)).toMatchObject({ ok: false, error: expect.stringMatching(/not valid JSON/) });

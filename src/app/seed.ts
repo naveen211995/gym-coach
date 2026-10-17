@@ -115,16 +115,16 @@ export const SEED_EXERCISES: SeedExercise[] = [
 
 /** What the engine should recommend next for each seeded exercise (asserted in tests/seed.test.ts). */
 export const EXPECTED_SEED_RULES: Record<string, { ruleId: string; load: number | null; reps: number[] }> = {
-  bench: { ruleId: 'A_TOP_OF_RANGE', load: 190, reps: [6, 6, 6] },
+  bench: { ruleId: 'A_TOP_OF_RANGE', load: 190, reps: [9, 9, 9] },
   row: { ruleId: 'B_ADD_REPS', load: 115, reps: [12, 12, 11] },
-  ohp: { ruleId: 'DELOAD_STALL', load: 45, reps: [9, 8, 8] },
+  ohp: { ruleId: 'DELOAD_STALL', load: 45, reps: [9, 8] },
   pushdown: { ruleId: 'REP_FIRST_CONSOLIDATE', load: 50, reps: [15, 15, 15] },
-  squat: { ruleId: 'DELOAD_REGRESSION', load: 200, reps: [7, 7, 7] },
-  rdl: { ruleId: 'D_HIGH_RIR_EARLY_INCREASE', load: 175, reps: [8, 8, 8] },
+  squat: { ruleId: 'DELOAD_REGRESSION', load: 200, reps: [7, 7] },
+  rdl: { ruleId: 'D_HIGH_RIR_EARLY_INCREASE', load: 175, reps: [11, 11, 9] },
   legext: { ruleId: 'E_TOP_LOW_RIR', load: 100, reps: [15, 15, 15] },
   calf: { ruleId: 'C_FIRST_BELOW', load: 160, reps: [10, 10, 10] },
-  incline: { ruleId: 'A_TOP_OF_RANGE', load: 65, reps: [8, 8, 8] },
-  pulldown: { ruleId: 'A_TOP_OF_RANGE', load: 60, reps: [8, 8, 8] },
+  incline: { ruleId: 'A_TOP_OF_RANGE', load: 65, reps: [9, 9, 9] },
+  pulldown: { ruleId: 'A_TOP_OF_RANGE', load: 60, reps: [10, 10, 9] },
   lateral: { ruleId: 'B_ADD_REPS_HIGH_RIR', load: 22.5, reps: [15, 15, 14] },
   curl: { ruleId: 'INCOMPLETE_SESSION', load: 65, reps: [9, 8, 8] },
   legpress: { ruleId: 'B_ADD_REPS', load: 270, reps: [15, 15, 13] },

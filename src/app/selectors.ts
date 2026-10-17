@@ -5,6 +5,8 @@
 import type {
   Dataset,
   Exercise,
+  Routine,
+  Weekday,
   ExerciseSession,
   PersonalRecord,
   ProgressionRecommendation,
@@ -12,17 +14,22 @@ import type {
   RoutineDay,
   WorkoutSession,
 } from '../domain/types';
+import { WEEKDAYS } from '../domain/types';
+import { hasSchedule, scheduleOf } from '../domain/defaults';
 import {
   buildSeries,
   computeBests,
   evaluateSession,
   recommendNext,
+  volumeReport,
   RULES,
   type EngineHistoryEntry,
   type EngineResult,
   type HistoricalBests,
   type SeriesPoint,
   type SessionEvaluation,
+  type VolumeReport,
+  type VolumeSession,
 } from '../engine';
 
 export const byId = <T extends { id: string }>(list: readonly T[]): Map<string, T> => new Map(list.map((x) => [x.id, x]));
@@ -102,11 +109,73 @@ export function exerciseStats(ds: Dataset, exercise: Exercise): ExerciseStats {
   };
 }
 
+export function activeRoutine(ds: Dataset): Routine | null {
+  return ds.routines.find((r) => r.id === ds.settings.activeRoutineId) ?? ds.routines[0] ?? null;
+}
+
 export function activeRoutineDays(ds: Dataset): RoutineDay[] {
-  const routine = ds.routines.find((r) => r.id === ds.settings.activeRoutineId) ?? ds.routines[0];
+  const routine = activeRoutine(ds);
   if (!routine) return [];
   const days = byId(ds.routineDays);
   return routine.dayIds.map((id) => days.get(id)).filter((d): d is RoutineDay => Boolean(d));
+}
+
+/** Monday-first weekday of a local date. */
+export function weekdayOf(date: Date): Weekday {
+  return WEEKDAYS[(date.getDay() + 6) % 7] as Weekday;
+}
+
+const sameLocalDay = (iso: string, date: Date): boolean => {
+  const d = new Date(iso);
+  return d.getFullYear() === date.getFullYear() && d.getMonth() === date.getMonth() && d.getDate() === date.getDate();
+};
+
+export interface PlannedWorkout {
+  weekday: Weekday;
+  /** What to train, or null when nothing is scheduled for this weekday. */
+  day: RoutineDay | null;
+  /** 'schedule' when the weekly plan decided it, 'rotation' for routines without one. */
+  source: 'schedule' | 'rotation' | 'none';
+  /** The routine has a schedule and this weekday is a rest day. */
+  rest: boolean;
+  /** The next scheduled workout within the coming week. */
+  next: { weekday: Weekday; day: RoutineDay; inDays: number } | null;
+  /** Workouts already completed on this date. */
+  trainedToday: WorkoutSession[];
+}
+
+/**
+ * What to train on a given date. A routine with a weekly schedule answers from
+ * that schedule (including explicit rest days); a routine without one falls
+ * back to rotating through its days, which is how this app behaved before
+ * schedules existed.
+ */
+export function plannedWorkout(ds: Dataset, now: Date = new Date()): PlannedWorkout {
+  const weekday = weekdayOf(now);
+  const trainedToday = completedWorkouts(ds).filter((w) => w.completedAt && sameLocalDay(w.completedAt, now));
+  const routine = activeRoutine(ds);
+  const days = activeRoutineDays(ds);
+  if (!routine || days.length === 0) {
+    return { weekday, day: null, source: 'none', rest: false, next: null, trainedToday };
+  }
+  if (!hasSchedule(routine)) {
+    return { weekday, day: nextRoutineDay(ds), source: 'rotation', rest: false, next: null, trainedToday };
+  }
+
+  const schedule = scheduleOf(routine);
+  const byDayId = byId(days);
+  const resolve = (w: Weekday) => {
+    const id = schedule[w];
+    return id ? (byDayId.get(id) ?? null) : null;
+  };
+  const day = resolve(weekday);
+  let next: PlannedWorkout['next'] = null;
+  for (let i = 1; i <= 7 && !next; i++) {
+    const w = WEEKDAYS[(WEEKDAYS.indexOf(weekday) + i) % 7] as Weekday;
+    const d = resolve(w);
+    if (d) next = { weekday: w, day: d, inDays: i };
+  }
+  return { weekday, day, source: 'schedule', rest: day === null, next, trainedToday };
 }
 
 /** Rotation: the day after the most recently completed day of the active routine. */
@@ -143,7 +212,12 @@ export function attentionItems(ds: Dataset): AttentionItem[] {
       text = 'Pain logged: review, replace or skip';
     } else if (rec.action === 'deload') {
       kind = 'deload';
-      text = rec.ruleId === 'DELOAD_REGRESSION' ? 'Regressing: deload recommended' : 'Stalled: deload recommended';
+      text =
+        rec.ruleId === 'DELOAD_RIR_REGRESSION'
+          ? 'Same reps but closer to failure: deload recommended'
+          : rec.ruleId === 'DELOAD_REGRESSION'
+            ? 'Regressing: deload recommended'
+            : 'Stalled: deload recommended';
     } else if (rec.action === 'decrease-load') {
       kind = 'decrease';
       text = 'Below range: load comes down';
@@ -161,6 +235,31 @@ export function attentionItems(ds: Dataset): AttentionItem[] {
   }
   const order: AttentionItem['kind'][] = ['config', 'pain', 'deload', 'decrease', 'caution', 'stall'];
   return out.sort((a, b) => order.indexOf(a.kind) - order.indexOf(b.kind));
+}
+
+/**
+ * Sets per muscle group over the last `weeks` weeks. Only completed sessions
+ * count, and each exercise is attributed to its single muscle group — see
+ * engine/volume.ts for what that does and does not capture.
+ */
+export function volumeFor(ds: Dataset, nowIso: string, weeks = 1): VolumeReport {
+  const since = new Date(Date.parse(nowIso) - weeks * 7 * 86400000).toISOString();
+  const ids = new Set(completedWorkouts(ds).filter((w) => (w.completedAt ?? '') >= since).map((w) => w.id));
+  const exercises = byId(ds.exercises);
+  const options = engineOptions(ds);
+  const sessions: VolumeSession[] = [];
+  for (const s of ds.exerciseSessions) {
+    if (!ids.has(s.workoutSessionId) || s.status !== 'completed') continue;
+    const exercise = exercises.get(s.exerciseId);
+    if (!exercise) continue;
+    sessions.push({
+      muscleGroup: exercise.muscleGroup,
+      exerciseId: exercise.id,
+      workoutSessionId: s.workoutSessionId,
+      evaluation: evaluateSession(s, exercise, options),
+    });
+  }
+  return volumeReport(sessions, weeks);
 }
 
 export interface WeekSummary {

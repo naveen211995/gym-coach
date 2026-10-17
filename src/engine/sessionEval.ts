@@ -6,7 +6,7 @@ import type {
   RecommendationAction,
   Unit,
 } from '../domain/types';
-import { estimateOneRepMax, mean, median } from './metrics';
+import { estimateMaxFromSet, estimateOneRepMax, mean, median, repsToFailure } from './metrics';
 import { RULES } from './rules';
 import { convertLoadRounded, roundTo } from './units';
 
@@ -30,7 +30,12 @@ export interface NormalizedSet {
   confidence: number | null;
   failed: boolean;
   atWorkingLoad: boolean;
+  /** Epley from the reps actually performed. Used for records and charts. */
   e1rm: number;
+  /** Reps performed plus reps left in reserve, when RIR is known. */
+  repsToFailure: number | null;
+  /** Epley from reps + RIR, capped at the reliable rep window. */
+  e1rmAtFailure: number;
 }
 
 export interface RirAssessment {
@@ -45,6 +50,8 @@ export interface RirAssessment {
   effectiveDeviation: number | null;
   reliable: boolean;
   inconsistent: boolean;
+  /** < 1 when high reported RIR was discounted for being less reliable. */
+  taper: number;
   values: number[];
 }
 
@@ -75,10 +82,20 @@ export interface SessionEvaluation {
   totalReps: number;
   totalRepsAtLoad: number;
   volume: number;
+  /** Volume from the planned sets only — extra sets don't inflate it. */
+  workingVolume: number;
   medianE1rm: number;
   bestE1rm: number;
   /** Trend indicator: median e1RM, or total reps/seconds when there is no external load. */
   performanceIndex: number;
+  /**
+   * The same indicator computed from reps + RIR, or null when RIR was not
+   * reliable enough to use. Trend comparisons only use it when both sessions
+   * have it, so the basis is never mixed.
+   */
+  capacityIndex: number | null;
+  /** Total reps-to-failure across the working sets at the working load, or null. */
+  capacityAtLoad: number | null;
   rir: RirAssessment;
   pain: PainLevel;
   warnings: string[];
@@ -135,7 +152,14 @@ function assessRir(working: readonly NormalizedSet[], targetRir: number): RirAss
   }
 
   const baseWeight = averageConfidence === null ? 0 : Math.max(0, Math.min(1, (averageConfidence - 1) / 4));
-  const weight = coverage + 1e-9 >= RULES.rirMinCoverage ? baseWeight * (inconsistent ? RULES.rirInconsistentPenalty : 1) : 0;
+  // Estimates of reps-in-reserve are least accurate far from failure, where
+  // lifters systematically under-report what they had left, so a high reported
+  // RIR carries less weight than a low one regardless of stated confidence.
+  const taper =
+    average === null || average <= RULES.rirTaperFrom
+      ? 1
+      : Math.max(RULES.rirTaperFloor, 1 - (average - RULES.rirTaperFrom) * RULES.rirTaperPerRep);
+  const weight = coverage + 1e-9 >= RULES.rirMinCoverage ? baseWeight * taper * (inconsistent ? RULES.rirInconsistentPenalty : 1) : 0;
   const deviation = average === null ? null : average - targetRir;
   const effectiveDeviation = deviation === null ? null : roundTo(deviation * weight, 4);
   return {
@@ -147,6 +171,7 @@ function assessRir(working: readonly NormalizedSet[], targetRir: number): RirAss
     effectiveDeviation,
     reliable: weight + 1e-9 >= RULES.rirMinWeight && average !== null,
     inconsistent,
+    taper: roundTo(taper, 4),
     values,
   };
 }
@@ -213,7 +238,18 @@ export function evaluateSession(
     const confidence = rir === null ? null : validConfidence(set.rirConfidence) ? set.rirConfidence : failed ? 5 : options.defaultRirConfidence;
     if (failed) failedCount++;
     const r = Math.round(reps);
-    performed.push({ index: set.index, load, reps: r, rir, confidence, failed, atWorkingLoad: false, e1rm: estimateOneRepMax(load, r) });
+    performed.push({
+      index: set.index,
+      load,
+      reps: r,
+      rir,
+      confidence,
+      failed,
+      atWorkingLoad: false,
+      e1rm: estimateOneRepMax(load, r),
+      repsToFailure: rir === null ? null : repsToFailure(r, rir),
+      e1rmAtFailure: estimateMaxFromSet(load, r, rir),
+    });
   });
 
   const working = performed.slice(0, plannedSets);
@@ -257,12 +293,23 @@ export function evaluateSession(
   }
 
   const totalReps = working.reduce((a, s) => a + s.reps, 0);
-  const totalRepsAtLoad = working.filter((s) => s.atWorkingLoad).reduce((a, s) => a + s.reps, 0);
+  const atLoad = working.filter((s) => s.atWorkingLoad);
+  const totalRepsAtLoad = atLoad.reduce((a, s) => a + s.reps, 0);
   const volume = roundTo(performed.reduce((a, s) => a + s.load * s.reps, 0), 2);
+  const workingVolume = roundTo(working.reduce((a, s) => a + s.load * s.reps, 0), 2);
   const e1rms = working.map((s) => s.e1rm);
   const medianE1rm = roundTo(median(e1rms) ?? 0, 2);
   const bestE1rm = roundTo(Math.max(0, ...performed.map((s) => s.e1rm)), 2);
-  const performanceIndex = cfg.strategy === 'time-based' || !(workingLoad !== null && workingLoad > 0) ? totalReps : medianE1rm;
+  const loaded = workingLoad !== null && workingLoad > 0;
+  const timeBased = cfg.strategy === 'time-based';
+  const performanceIndex = timeBased || !loaded ? totalReps : medianE1rm;
+
+  const rir = assessRir(working, cfg.targetRir);
+  // Capacity needs RIR on every working set at the load: a partial picture
+  // would make a session look stronger or weaker than it was.
+  const capacityUsable = !timeBased && rir.reliable && atLoad.length > 0 && atLoad.every((s) => s.repsToFailure !== null);
+  const capacityAtLoad = capacityUsable ? atLoad.reduce((a, s) => a + (s.repsToFailure as number), 0) : null;
+  const capacityIndex = capacityUsable && loaded ? roundTo(median(working.map((s) => s.e1rmAtFailure)) ?? 0, 2) : null;
 
   return {
     sessionId: session.id,
@@ -288,10 +335,13 @@ export function evaluateSession(
     totalReps,
     totalRepsAtLoad,
     volume,
+    workingVolume,
     medianE1rm,
     bestE1rm,
     performanceIndex,
-    rir: assessRir(working, cfg.targetRir),
+    capacityIndex,
+    capacityAtLoad,
+    rir,
     pain: session.pain ?? 'none',
     warnings,
   };

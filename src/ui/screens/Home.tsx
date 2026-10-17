@@ -1,8 +1,20 @@
-import React from 'react';
+import React, { useState } from 'react';
 import { PR_LABELS, formatNumber } from '../../engine';
-import { activeWorkout, attentionItems, byId, completedWorkouts, nextRecommendation, nextRoutineDay, recentRecords, weekSummary } from '../../app/selectors';
-import type { Exercise } from '../../domain/types';
-import { ActionTag, Empty, Icon, TopBar, toneOf } from '../components';
+import {
+  activeRoutine,
+  activeRoutineDays,
+  activeWorkout,
+  attentionItems,
+  byId,
+  completedWorkouts,
+  nextRecommendation,
+  recentRecords,
+  plannedWorkout,
+  weekSummary,
+} from '../../app/selectors';
+import { WEEKDAY_LABELS, scheduleOf } from '../../domain/defaults';
+import { WEEKDAYS, type Exercise } from '../../domain/types';
+import { ActionTag, Empty, Icon, Sheet, TopBar, toneOf } from '../components';
 import { dayLabel, isTimeBased, loadText, repsText, volumeText } from '../format';
 import { isDemoData, useStore } from '../store';
 import type { Nav } from '../App';
@@ -10,7 +22,13 @@ import type { Nav } from '../App';
 export function Home({ nav }: { nav: Nav }) {
   const { ds, warning } = useStore();
   const active = activeWorkout(ds);
-  const next = nextRoutineDay(ds);
+  const planned = plannedWorkout(ds);
+  // On a rest day, show what is coming instead of an empty card.
+  const next = planned.day ?? planned.next?.day ?? null;
+  const allDays = activeRoutineDays(ds);
+  const schedule = scheduleOf(activeRoutine(ds));
+  const weekdaysFor = (dayId: string) => WEEKDAYS.filter((w) => schedule[w] === dayId).map((w) => WEEKDAY_LABELS[w].short);
+  const [switching, setSwitching] = useState(false);
   const exercises = byId(ds.exercises);
   const nextList = (next?.exerciseIds ?? []).map((id) => exercises.get(id)).filter((e): e is Exercise => Boolean(e && !e.archived));
   const attention = attentionItems(ds);
@@ -70,13 +88,18 @@ export function Home({ nav }: { nav: Nav }) {
           <section className="card" aria-labelledby="next-h">
             <div className="spread" style={{ marginBottom: 6 }}>
               <div>
-                <div className="small muted">Next up{last ? `, last trained ${dayLabel(last.completedAt).toLowerCase()}` : ''}</div>
+                <div className="small muted">{planLabel(planned, last?.completedAt ?? null)}</div>
                 <h3 id="next-h" style={{ margin: 0, fontSize: 21 }}>{next.name}</h3>
               </div>
-              <button className="btn primary small" onClick={() => nav.tab('train')}>
-                Start
+              <button className="btn primary small" onClick={() => nav.train(next.id)}>
+                {planned.rest ? 'Train anyway' : 'Start'}
               </button>
             </div>
+            {planned.trainedToday.length > 0 && (
+              <div className="small muted" style={{ marginBottom: 6 }}>
+                Already trained today: {planned.trainedToday.map((w) => w.name).join(', ')}.
+              </div>
+            )}
             <div className="next-list">
               {nextList.map((ex) => {
                 const rec = nextRecommendation(ds, ex);
@@ -94,14 +117,54 @@ export function Home({ nav }: { nav: Nav }) {
                   </button>
                 );
               })}
-              {nextList.length === 0 && <div className="small muted">No exercises on this day yet.</div>}
+              {nextList.length === 0 && (
+                <div className="small muted">
+                  No exercises on this day yet.{' '}
+                  <button className="linkish" onClick={() => nav.push({ name: 'routines' })}>Add some</button>.
+                </div>
+              )}
             </div>
+            {allDays.length > 1 && (
+              <button className="btn block small" style={{ marginTop: 10 }} onClick={() => setSwitching(true)}>
+                <Icon name="swap" size={16} /> Do a different workout today
+              </button>
+            )}
           </section>
         ) : (
           <Empty title="No routine yet" action={<button className="btn primary" onClick={() => nav.push({ name: 'routines' })}>Build a routine</button>}>
             A routine lets the coach line up your next workout.
           </Empty>
         )}
+
+        <Sheet open={switching} title="Workout for today" onClose={() => setSwitching(false)}>
+          <div className="stack">
+            <div className="small muted">Just for today. Your weekly schedule stays as it is.</div>
+            <div className="list">
+              {allDays.map((d) => (
+                <button
+                  key={d.id}
+                  className="list-item"
+                  onClick={() => {
+                    setSwitching(false);
+                    nav.train(d.id);
+                  }}
+                >
+                  <span className="grow">
+                    <span className="title" style={{ display: 'block' }}>{d.name}</span>
+                    <span className="meta">
+                      {weekdaysFor(d.id).join(', ') || 'Not scheduled'}
+                      {d.id === next?.id ? ' · today’s plan' : ''}
+                    </span>
+                  </span>
+                  <Icon name="chevron" size={18} />
+                </button>
+              ))}
+            </div>
+            <button className="btn block" onClick={() => { setSwitching(false); nav.train(null); }}>
+              Empty workout
+            </button>
+          </div>
+        </Sheet>
 
         {attention.length > 0 && (
           <>
@@ -155,6 +218,15 @@ export function Home({ nav }: { nav: Nav }) {
       </div>
     </>
   );
+}
+
+/** The small line above the workout name: why this is what you see. */
+function planLabel(planned: ReturnType<typeof plannedWorkout>, lastCompletedAt: string | null): string {
+  const today = WEEKDAY_LABELS[planned.weekday].long;
+  if (planned.source === 'rotation') return `Next up${lastCompletedAt ? `, last trained ${dayLabel(lastCompletedAt).toLowerCase()}` : ''}`;
+  if (planned.day) return planned.trainedToday.length > 0 ? `${today}, scheduled` : `${today}, your usual`;
+  if (planned.next) return `${today} is a rest day — next up ${WEEKDAY_LABELS[planned.next.weekday].long}`;
+  return `${today} is a rest day`;
 }
 
 export function prValue(type: string, value: number, load: number | null, reps: number | null, unit: string): string {
