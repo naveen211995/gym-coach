@@ -6,7 +6,7 @@ import {
   byId,
   lastCompletedSession,
   nextRecommendation,
-  plannedWorkout,
+  nextRoutineDay,
   readinessForWorkout,
   recommendationAfter,
   sessionsForWorkout,
@@ -18,31 +18,17 @@ import { ActionTag, Chips, Confirm, Empty, Icon, Sheet, Stepper, TargetPlate, To
 import { ACTION_META, dayLabel, durationText, isBodyweight, isTimeBased, loadText, mmss, performanceText, repsText, setText } from '../format';
 import { vibrate } from '../platform';
 import { useStore } from '../store';
-import { WEEKDAY_LABELS } from '../../domain/defaults';
-import type { PlannedWorkout } from '../../app/selectors';
 import type { Nav } from '../App';
 
 // ───────────────────────── start ─────────────────────────
 
 const SCALE = [1, 2, 3, 4, 5].map((v) => ({ value: v, label: String(v) }));
 
-/** Why this day is pre-selected, in one line. */
-function planSubtitle(planned: PlannedWorkout): string | undefined {
-  const today = WEEKDAY_LABELS[planned.weekday].long;
-  if (planned.source === 'rotation') return planned.day ? `Next in your rotation: ${planned.day.name}` : undefined;
-  if (planned.day) return `${today}: ${planned.day.name}`;
-  if (planned.next) return `${today} is a rest day. Next up: ${planned.next.day.name} (${WEEKDAY_LABELS[planned.next.weekday].long})`;
-  return `${today} is a rest day`;
-}
-
-export function StartWorkout({ nav, dayId: preselected = null }: { nav: Nav; dayId?: string | null }) {
+export function StartWorkout({ nav }: { nav: Nav }) {
   const { ds, run } = useStore();
   const days = activeRoutineDays(ds);
-  const planned = plannedWorkout(ds);
-  // A day handed over from Home wins; otherwise today's schedule, and on a rest
-  // day the next workout that is scheduled.
-  const suggested = planned.day ?? planned.next?.day ?? null;
-  const [dayId, setDayId] = useState<string | null>(preselected ?? suggested?.id ?? null);
+  const suggested = nextRoutineDay(ds);
+  const [dayId, setDayId] = useState<string | null>(suggested?.id ?? null);
   const [checkIn, setCheckIn] = useState(false);
   const [r, setR] = useState<{ readiness: number | null; energy: number | null; fatigue: number | null; sleepHours: number | null; pain: boolean }>({ readiness: null, energy: null, fatigue: null, sleepHours: null, pain: false });
   const day = days.find((d) => d.id === dayId) ?? null;
@@ -69,7 +55,7 @@ export function StartWorkout({ nav, dayId: preselected = null }: { nav: Nav; day
 
   return (
     <>
-      <TopBar title="Start workout" sub={planSubtitle(planned)} />
+      <TopBar title="Start workout" sub={suggested ? `Next in your rotation: ${suggested.name}` : undefined} />
       <div className="stack">
         {days.length > 0 && (
           <Chips

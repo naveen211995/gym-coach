@@ -1,15 +1,11 @@
 """
-E2E for the two behaviours this release changed in the UI:
+E2E for the finish-exercise fix.
 
-  1. Finishing an exercise moves to the next UNFINISHED one and scrolls it into
-     view. Before, the right card was opened but could be over a thousand pixels
-     off screen, so it looked like nothing had happened and the finished card was
-     still what you were looking at.
-  2. The weekly schedule: a routine with no schedule says so and offers the
-     Mon/Tue/Thu/Fri split in one tap, after which Home plans by weekday instead
-     of always showing the first day.
+Finishing an exercise moves to the next UNFINISHED one and scrolls it into view.
+Before, the right card was opened but could be over a thousand pixels off
+screen, so it looked like nothing had happened and the exercise you had just
+finished was still what you were looking at.
 """
-import datetime
 import re
 import sys
 from pathlib import Path
@@ -26,10 +22,6 @@ errors, results = [], []
 absent = missing_outputs()
 if absent:
     sys.exit("Missing build output: %s -- run `node build.mjs` first." % ", ".join(absent))
-
-WEEKDAY_LONG = ["Monday", "Tuesday", "Wednesday", "Thursday", "Friday", "Saturday", "Sunday"]
-SPLIT = {"Monday": "Push", "Tuesday": "Pull", "Thursday": "Legs", "Friday": "Delts + Width + Arms"}
-
 
 def check(name, cond):
     results.append((name, bool(cond)))
@@ -65,7 +57,6 @@ with sync_playwright() as p:
     page.goto(ORIGIN + "/")
     expect(page.get_by_role("heading", name=re.compile("Today"))).to_be_visible(timeout=20000)
 
-    # ───────────────── 1. finishing an exercise out of order ─────────────────
     page.get_by_role("button", name="Train").click()
     page.get_by_role("button", name=re.compile("Start Lower B")).click()
     expect(page.get_by_text("Leg Press").first).to_be_visible()
@@ -117,54 +108,12 @@ with sync_playwright() as p:
     page.get_by_role("button", name="Discard", exact=True).click()
     page.wait_for_timeout(500)
 
-    # ───────────────── 2. the weekly schedule ─────────────────
-    page.get_by_role("button", name="More").click()
-    page.get_by_role("button", name=re.compile("Routine builder")).click()
-    expect(page.get_by_role("heading", name="Weekly schedule")).to_be_visible()
-    check("an unscheduled routine explains why Home repeats a day", page.get_by_text(re.compile("rotates through the days in order")).is_visible())
-    page.screenshot(path=str(SHOTS / "12-schedule-empty.png"), full_page=True)
-
-    page.get_by_role("button", name=re.compile("Use Mon Push")).click()
-    page.wait_for_timeout(700)
-    check("the split created the four days", all(page.get_by_role("heading", name=n, exact=True).count() > 0 for n in ("Push", "Pull", "Legs")))
-    for weekday, workout in SPLIT.items():
-        group = page.get_by_role("radiogroup", name=weekday)
-        selected = group.get_by_role("radio", checked=True).first.inner_text().strip()
-        check(f"{weekday} is {workout} (shows '{selected}')", selected == workout)
-    for weekday in ("Wednesday", "Saturday", "Sunday"):
-        group = page.get_by_role("radiogroup", name=weekday)
-        selected = group.get_by_role("radio", checked=True).first.inner_text().strip()
-        check(f"{weekday} is a rest day (shows '{selected}')", selected == "Rest")
-    # The demo routine already holds 4 of the 7 allowed days, so the split lands
-    # in a new routine and the old one is left alone.
-    check("the old routine is still there", page.get_by_role("radio", name=re.compile(r"Upper")).count() > 0)
-    page.screenshot(path=str(SHOTS / "13-schedule-set.png"), full_page=True)
-
-    # Home now plans by weekday.
-    page.get_by_role("button", name="Home").click()
-    today = WEEKDAY_LONG[datetime.date.today().weekday()]
-    expected = SPLIT.get(today)
-    page.wait_for_timeout(400)
-    if expected:
-        check(f"today is {today}, so Home plans {expected}", page.get_by_role("heading", name=expected, exact=True).count() > 0)
-        check("Home says which weekday that is", page.get_by_text(re.compile(today)).count() > 0)
-    else:
-        check(f"today is {today}, so Home calls it a rest day", page.get_by_text(re.compile(f"{today} is a rest day")).count() > 0)
-        check("and points at the next scheduled workout", page.get_by_role("button", name=re.compile("Train anyway")).count() > 0)
-    check("you can still switch today's workout", page.get_by_role("button", name=re.compile("Do a different workout today")).count() > 0)
-    page.screenshot(path=str(SHOTS / "14-home-scheduled.png"), full_page=True)
-
-    page.get_by_role("button", name=re.compile("Do a different workout today")).click()
-    page.wait_for_timeout(300)
-    check("the switch sheet lists the scheduled weekdays", page.get_by_text(re.compile(r"^(Mon|Tue|Thu|Fri)")).count() > 0)
-    check("and says it is only for today", page.get_by_text(re.compile("Your weekly schedule stays as it is")).is_visible())
-    page.screenshot(path=str(SHOTS / "15-switch-today.png"), full_page=False)
-
     check(f"no console errors ({errors})", not errors)
     browser.close()
 
 failed = [n for n, ok in results if not ok]
-print(f"\n{len(results) - len(failed)}/{len(results)} checks passed")
+print("")
+print("%d/%d checks passed" % (len(results) - len(failed), len(results)))
 if failed:
     print("FAILED: " + "; ".join(failed))
     sys.exit(1)

@@ -92,29 +92,11 @@ export interface Exercise {
   updatedAt: string;
 }
 
-/** Monday-first, because that is how a training week is read. */
-export type Weekday = 'mon' | 'tue' | 'wed' | 'thu' | 'fri' | 'sat' | 'sun';
-
-export const WEEKDAYS: readonly Weekday[] = ['mon', 'tue', 'wed', 'thu', 'fri', 'sat', 'sun'] as const;
-
-/**
- * Weekly plan: each weekday points at a routine day, or null for an explicit
- * rest day. A routine with no non-null slot has no schedule, and the app falls
- * back to rotating through `dayIds` (see selectors.plannedWorkout).
- */
-export type RoutineSchedule = Record<Weekday, string | null>;
-
 export interface Routine {
   id: string;
   name: string;
-  /** Ordered day ids; the rotation fallback follows this order. */
+  /** Ordered day ids; the rotation follows this order. */
   dayIds: string[];
-  /**
-   * Optional: routines created before schema 2 have no schedule, and records
-   * loaded straight from IndexedDB are not migrated, so always read this
-   * through `scheduleOf()` rather than touching it directly.
-   */
-  schedule?: RoutineSchedule;
   createdAt: string;
 }
 

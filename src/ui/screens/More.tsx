@@ -1,21 +1,16 @@
 import React, { useRef, useState } from 'react';
 import {
-  DEFAULT_SPLIT,
   DELOAD_STRATEGIES,
   EQUIPMENT_TYPES,
   MUSCLE_GROUPS,
   STRATEGIES,
   TARGET_RIR_GUIDANCE,
-  WEEKDAY_LABELS,
   defaultIncrementFor,
   defaultProgression,
-  hasSchedule,
-  scheduleOf,
 } from '../../domain/defaults';
 import { emptyDataset } from '../../domain/change';
 import { defaultSettings } from '../../domain/defaults';
-import type { Dataset, Exercise, MuscleGroup, ProgressionConfig, Routine, RoutineDay, Unit } from '../../domain/types';
-import { WEEKDAYS } from '../../domain/types';
+import type { Dataset, Exercise, MuscleGroup, ProgressionConfig, Unit } from '../../domain/types';
 import { RULES, RULE_DESCRIPTIONS, formatNumber, incrementFeasibility } from '../../engine';
 import { nextRecommendation } from '../../app/selectors';
 import * as S from '../../app/services';
@@ -30,7 +25,7 @@ export function MoreMenu({ nav }: { nav: Nav }) {
   const { storage } = useStore();
   const items: { label: string; meta: string; route: Parameters<Nav['push']>[0] }[] = [
     { label: 'Exercise library', meta: 'Exercises and their progression settings', route: { name: 'library' } },
-    { label: 'Routine builder', meta: 'Weekly schedule, days and exercise order', route: { name: 'routines' } },
+    { label: 'Routine builder', meta: 'Days, exercise order and rotation', route: { name: 'routines' } },
     { label: 'Settings', meta: 'Units, readiness check-in, RIR confidence, theme', route: { name: 'settings' } },
     { label: 'Backup & restore', meta: 'Export JSON or CSV, import, reset', route: { name: 'backup' } },
     { label: 'How progression works', meta: 'Every rule the coach uses, with thresholds', route: { name: 'rules' } },
@@ -317,7 +312,7 @@ export function Routines({ nav }: { nav: Nav }) {
     if (!naming) return;
     const v = naming.value;
     if (naming.kind === 'routine-new') {
-      const res = await run((d, ctx) => S.createRoutine(d, v, DEFAULT_SPLIT.map((x) => ({ name: x.name, weekdays: x.weekdays })), ctx));
+      const res = await run((d, ctx) => S.createRoutine(d, v, ['Day 1'], ctx));
       if (res) setRoutineId(res.id);
     } else if (naming.kind === 'routine' && naming.id) await commit((d) => S.renameRoutine(d, naming.id as string, v));
     else if (naming.kind === 'day-new' && routine) await commit((d, ctx) => S.addRoutineDay(d, routine.id, v, ctx));
@@ -331,7 +326,7 @@ export function Routines({ nav }: { nav: Nav }) {
       <div className="stack">
         {!routine ? (
           <Empty title="No routines yet" action={<button className="btn primary" onClick={() => setNaming({ kind: 'routine-new', value: '' })}>Create a routine</button>}>
-            A routine is a set of workout days and the weekdays you do them on.
+            A routine is an ordered list of days. The coach rotates through them.
           </Empty>
         ) : (
           <>
@@ -355,7 +350,6 @@ export function Routines({ nav }: { nav: Nav }) {
                 </button>
               )}
             </div>
-            <WeeklySchedule routine={routine} onPick={setRoutineId} />
             {routine.dayIds.map((dayId, i) => {
               const day = ds.routineDays.find((d) => d.id === dayId);
               if (!day) return null;
@@ -440,75 +434,6 @@ function IncrementHint({ load, progression, unit }: { load: number | null; progr
     <span className="small muted">
       {step}, worth about {formatNumber(f.reps, 1)} reps of your {f.range}-rep range.
     </span>
-  );
-}
-
-/**
- * The weekly plan: one row per weekday, each pointing at a day of this routine
- * or at rest. A routine with nothing assigned keeps the old rotation, and says
- * so, with one tap to set up the default split.
- */
-function WeeklySchedule({ routine, onPick }: { routine: Routine; onPick: (id: string) => void }) {
-  const { ds, commit, run, notify } = useStore();
-  const schedule = scheduleOf(routine);
-  const days = routine.dayIds.map((id) => ds.routineDays.find((d) => d.id === id)).filter((d): d is RoutineDay => Boolean(d));
-  const scheduled = hasSchedule(routine);
-  const missing = DEFAULT_SPLIT.filter((d) => !days.some((e) => e.name.trim().toLowerCase() === d.name.toLowerCase()));
-  // A routine holds at most 7 days. When the split will not fit, it goes into a
-  // new routine rather than asking the lifter to delete days first.
-  const fits = missing.length <= 7 - days.length;
-
-  const useSplit = async () => {
-    if (fits) {
-      const res = await run((d, ctx) => ({ change: S.applyDefaultSplit(d, routine.id, ctx).change }));
-      if (res) notify(missing.length ? `Added ${missing.map((m) => m.name).join(', ')}.` : 'Weekly schedule set.', 'success');
-      return;
-    }
-    const created = await run((d, ctx) => S.createRoutine(d, 'Push / Pull / Legs / Delts', DEFAULT_SPLIT.map((x) => ({ name: x.name, weekdays: x.weekdays })), ctx));
-    if (!created) return;
-    await commit((d, ctx) => S.updateSettings(d, { activeRoutineId: created.id }, ctx));
-    onPick(created.id);
-    notify('New routine created and made active. Your old routine is untouched.', 'success');
-  };
-
-  return (
-    <section className="card" aria-label="Weekly schedule">
-      <div className="spread" style={{ marginBottom: 4 }}>
-        <h3 style={{ margin: 0 }}>Weekly schedule</h3>
-      </div>
-      {!scheduled && (
-        <div className="banner info small">
-          No weekly schedule yet, so the coach just rotates through the days in order — which is why Home can keep showing the
-          same one. Pick a day for each weekday below, or set up the usual split in one tap.
-        </div>
-      )}
-      <div style={{ marginTop: 8 }}>
-        {WEEKDAYS.map((w) => {
-          const current = schedule[w];
-          return (
-            <div key={w} className={`sched-row ${current ? '' : 'rest'}`}>
-              <span className="wd">{WEEKDAY_LABELS[w].short}</span>
-              <Chips
-                label={WEEKDAY_LABELS[w].long}
-                value={current ?? '__rest'}
-                onChange={(v) => commit((d) => S.setRoutineSchedule(d, routine.id, w, v === '__rest' || v === null ? null : String(v)))}
-                options={[...days.map((d) => ({ value: d.id, label: d.name, className: 'text' })), { value: '__rest', label: 'Rest', className: 'text' }]}
-              />
-            </div>
-          );
-        })}
-      </div>
-      <button className="btn block small" style={{ marginTop: 10 }} onClick={useSplit}>
-        Use Mon Push / Tue Pull / Thu Legs / Fri Delts
-      </button>
-      <div className="small muted" style={{ marginTop: 6 }}>
-        {!fits
-          ? `This routine already holds ${days.length} days of the 7 allowed, so the split goes into a new routine and this one is left exactly as it is.`
-          : missing.length > 0
-            ? `Adds ${missing.map((m) => m.name).join(', ')} as empty days — nothing you have already built is changed.`
-            : 'Re-points the four weekday slots at those days; nothing is added or removed.'}
-      </div>
-    </section>
   );
 }
 

@@ -16,7 +16,7 @@
  * BUILD_ID is substituted by build.mjs, so each build gets its own cache and
  * the previous one is deleted on activate.
  */
-const VERSION = 'e4f34c22779c';
+const VERSION = 'bb3dd0323727';
 const CACHE = 'gpc-' + VERSION;
 const HTML_KEY = './index.html';
 const HTML_TIMEOUT_MS = 3000;

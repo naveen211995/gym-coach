@@ -24,12 +24,6 @@ export interface Nav {
   tab: (t: Tab) => void;
   push: (r: Route) => void;
   back: () => void;
-  /**
-   * Go to the Train tab with a workout day pre-selected. Deliberately not
-   * stored: switching today's workout is a one-off, so it lives in nav state
-   * and is forgotten as soon as you go elsewhere.
-   */
-  train: (dayId: string | null) => void;
 }
 
 const TABS: { id: Tab; label: string; icon: string }[] = [
@@ -44,13 +38,11 @@ function Shell() {
   const { ds, toasts, dismiss } = useStore();
   const [tab, setTab] = useState<Tab>(() => (activeWorkout(ds) ? 'train' : 'home'));
   const [stack, setStack] = useState<Route[]>([]);
-  const [startDayId, setStartDayId] = useState<string | null>(null);
   const nav = useMemo<Nav>(
     () => ({
       tab: (t) => {
         setTab(t);
         setStack([]);
-        setStartDayId(null);
         window.scrollTo(0, 0);
       },
       push: (r) => {
@@ -58,12 +50,6 @@ function Shell() {
         window.scrollTo(0, 0);
       },
       back: () => setStack((s) => s.slice(0, -1)),
-      train: (dayId) => {
-        setStartDayId(dayId);
-        setTab('train');
-        setStack([]);
-        window.scrollTo(0, 0);
-      },
     }),
     [],
   );
@@ -108,7 +94,7 @@ function Shell() {
   } else {
     screen =
       tab === 'home' ? <Home nav={nav} /> :
-      tab === 'train' ? (active ? <ActiveWorkout key={active.id} workout={active} nav={nav} /> : <StartWorkout nav={nav} dayId={startDayId} />) :
+      tab === 'train' ? (active ? <ActiveWorkout key={active.id} workout={active} nav={nav} /> : <StartWorkout nav={nav} />) :
       tab === 'history' ? <HistoryScreen nav={nav} /> :
       tab === 'progress' ? <ProgressScreen nav={nav} /> :
       <MoreMenu nav={nav} />;

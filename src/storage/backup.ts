@@ -7,13 +7,13 @@
  * dropped, and the user chooses between merging (keep local on conflict) and
  * replacing everything (explicit confirmation in the UI).
  */
-import { defaultSettings, emptySchedule } from '../domain/defaults';
+import { defaultSettings } from '../domain/defaults';
 import { emptyDataset } from '../domain/change';
 import { COLLECTIONS, type CollectionName, type Dataset, type ExerciseSession } from '../domain/types';
 import { validators } from './schema';
 
 export const BACKUP_APP_ID = 'gym-progression-coach';
-export const SCHEMA_VERSION = 2;
+export const SCHEMA_VERSION = 1;
 
 export interface BackupFile {
   app: typeof BACKUP_APP_ID;
@@ -31,24 +31,7 @@ export function serializeBackup(ds: Dataset, exportedAt: string): string {
  * Migrations from version N to N+1. Version 1 is the first format, so the
  * registry is empty; add `2: (data) => …` when the model changes.
  */
-export const MIGRATIONS: Record<number, (data: Record<string, unknown>) => Record<string, unknown>> = {
-  /**
-   * 1 -> 2: routines gained a weekly schedule. An old backup has none, so every
-   * weekday starts as a rest day and the app keeps rotating through the days
-   * until a schedule is set. Nothing the lifter logged is touched.
-   */
-  2: (data) => {
-    const routines = Array.isArray(data.routines) ? data.routines : [];
-    return {
-      ...data,
-      routines: routines.map((r) => {
-        const routine = (typeof r === 'object' && r !== null ? r : {}) as Record<string, unknown>;
-        const existing = routine.schedule;
-        return { ...routine, schedule: typeof existing === 'object' && existing !== null ? existing : emptySchedule() };
-      }),
-    };
-  },
-};
+export const MIGRATIONS: Record<number, (data: Record<string, unknown>) => Record<string, unknown>> = {};
 
 export type Counts = Record<CollectionName, number>;
 const zeroCounts = (): Counts => Object.fromEntries(COLLECTIONS.map((c) => [c, 0])) as Counts;

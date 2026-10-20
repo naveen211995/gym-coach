@@ -4,13 +4,9 @@ import type {
   MuscleGroup,
   ProgressionConfig,
   ProgressionStrategy,
-  Routine,
-  RoutineSchedule,
   Unit,
   UserSettings,
-  Weekday,
 } from './types';
-import { WEEKDAYS } from './types';
 
 export const DEFAULT_PROGRESSION: Readonly<ProgressionConfig> = Object.freeze({
   workingSets: 3,
@@ -103,53 +99,6 @@ export const DELOAD_STRATEGIES: readonly { value: DeloadStrategy; label: string;
   { value: 'reduce-sets', label: 'Reduce sets', description: 'One session with about half the sets, then resume.' },
   { value: 'none', label: 'No deload', description: 'Flag stalls but never recommend a deload.' },
 ];
-
-export const WEEKDAY_LABELS: Readonly<Record<Weekday, { short: string; long: string }>> = Object.freeze({
-  mon: { short: 'Mon', long: 'Monday' },
-  tue: { short: 'Tue', long: 'Tuesday' },
-  wed: { short: 'Wed', long: 'Wednesday' },
-  thu: { short: 'Thu', long: 'Thursday' },
-  fri: { short: 'Fri', long: 'Friday' },
-  sat: { short: 'Sat', long: 'Saturday' },
-  sun: { short: 'Sun', long: 'Sunday' },
-});
-
-/** Every weekday a rest day. */
-export function emptySchedule(): RoutineSchedule {
-  return { mon: null, tue: null, wed: null, thu: null, fri: null, sat: null, sun: null };
-}
-
-/**
- * A routine's schedule, with every weekday present. Routines written before
- * schema 2 have none, so this is the only safe way to read it.
- */
-export function scheduleOf(routine: Pick<Routine, 'schedule'> | null | undefined): RoutineSchedule {
-  const out = emptySchedule();
-  const raw = routine?.schedule;
-  if (!raw) return out;
-  for (const d of WEEKDAYS) {
-    const v = raw[d];
-    out[d] = typeof v === 'string' && v.length > 0 ? v : null;
-  }
-  return out;
-}
-
-/** A schedule with nothing assigned is not a plan, so the rotation is used instead. */
-export function hasSchedule(routine: Pick<Routine, 'schedule'> | null | undefined): boolean {
-  const s = scheduleOf(routine);
-  return WEEKDAYS.some((d) => s[d] !== null);
-}
-
-/**
- * The default weekly split for a new routine: four training days, with
- * Wednesday, Saturday and Sunday as explicit rest days.
- */
-export const DEFAULT_SPLIT: readonly { name: string; weekdays: readonly Weekday[] }[] = Object.freeze([
-  { name: 'Push', weekdays: ['mon'] },
-  { name: 'Pull', weekdays: ['tue'] },
-  { name: 'Legs', weekdays: ['thu'] },
-  { name: 'Delts + Width + Arms', weekdays: ['fri'] },
-]);
 
 /**
  * Evidence-backed window for proximity to failure on hypertrophy work: roughly

@@ -32,14 +32,9 @@ previously logged."* Charts and polish are secondary to that.
 7. Design for **fast gym usage on a phone**: large tap targets, numeric
    steppers, minimal typing, swipe-friendly.
 8. Support **JSON export/import** and **CSV export** for backup — JSON must
-   carry a schema version for future migrations. Schema 2 added the weekly
-   schedule; every bump needs a migration in `storage/backup.ts` and a test.
-9. A routine carries a **weekly schedule** (weekday -> workout day, or an
-   explicit rest day). Today's workout comes from that schedule; a routine with
-   no schedule falls back to rotating through its days. Switching today's
-   workout is deliberately **not** persisted: it is a one-off, held in nav
-   state, never an edit to the schedule.
-10. Data is stored locally via **IndexedDB**. There is no sync between devices
+   carry a schema version for future migrations. Every bump needs a migration
+   in `storage/backup.ts` and a test.
+9. Data is stored locally via **IndexedDB**. There is no sync between devices
    — each browser/device has its own independent local copy. (JSON
    export/import is the user's manual "sync" mechanism between devices.)
 
@@ -101,7 +96,7 @@ Before implementing a significant feature:
 6. Run tests (`npx vitest run`, `npx tsc --noEmit`).
 7. Rebuild (`node build.mjs`, which regenerates the root `index.html`) and
    re-run the E2E suite (`e2e_smoke.py`, `focus_regression.py`,
-   `offline_pwa.py`, `schedule_and_advance.py` in `tests/e2e/`).
+   `offline_pwa.py`, `exercise_advance.py` in `tests/e2e/`).
 8. Inspect the result, fix any issues found.
 
 Prefer simplicity, correctness, and maintainability over "fashionable"
@@ -186,11 +181,10 @@ the suites fail instead of silently using the live CDN.
 - `offline_pwa.py` — service worker registers and precaches, the app boots
   with the network fully offline, logged data survives it, and every emitted
   URL is relative.
-- `schedule_and_advance.py` — finishing an exercise opens the next *unfinished*
-  one **and scrolls it into view** (it used to open the right card up to 1,300px
-  off screen, so the finished card was still what you were looking at), and the
-  weekly schedule: an unscheduled routine says so, the one-tap split lands
-  Mon/Tue/Thu/Fri with Wed/Sat/Sun as rest, and Home then plans by weekday.
+- `exercise_advance.py` — finishing an exercise opens the next *unfinished* one
+  **and scrolls it into view**. It used to open the right card up to 1,300px off
+  screen, so the finished card was still what the lifter was looking at; the
+  suite fails if a future change stops naming the target or stops scrolling.
 
 ## Working agreement for Claude Code in this repo
 

@@ -3,7 +3,6 @@
  * record is checked field by field before it can reach the app or the engine.
  */
 import type { Dataset } from '../domain/types';
-import { WEEKDAYS } from '../domain/types';
 import { EQUIPMENT_TYPES, MUSCLE_GROUPS } from '../domain/defaults';
 
 type Obj = Record<string, unknown>;
@@ -19,9 +18,6 @@ const isNullIso = (v: unknown): v is string | null => v === null || isIso(v);
 const oneOf = <T extends string>(vals: readonly T[]) => (v: unknown): v is T => isStr(v) && (vals as readonly string[]).includes(v);
 const arrOf = <T>(pred: (x: unknown) => x is T) => (v: unknown): v is T[] => Array.isArray(v) && v.every(pred);
 const isId = (v: unknown): v is string => isStr(v) && v.length > 0 && v.length <= 200;
-
-/** Every weekday present, each holding a routine-day id or null (a rest day). */
-const isSchedule = (v: unknown): boolean => isObj(v) && WEEKDAYS.every((d) => isNullStr(v[d]));
 
 const UNIT = oneOf(['lb', 'kg', 'plt'] as const);
 const MUSCLE = oneOf(MUSCLE_GROUPS.map((m) => m.value));
@@ -96,7 +92,7 @@ export const validators: { [K in keyof Omit<Dataset, 'settings'>]: (v: unknown) 
   exercises: (v) =>
     shape({ id: isId, name: (x) => isStr(x) && x.trim().length > 0 && x.length <= 80, muscleGroup: MUSCLE, equipment: EQUIP, unit: UNIT, notes: isStr, archived: isBool, createdAt: isIso, updatedAt: isIso })(v) ??
     (progression((v as Obj).progression) ? `progression: ${progression((v as Obj).progression)}` : null),
-  routines: shape({ id: isId, name: isStr, dayIds: arrOf(isId), schedule: isSchedule, createdAt: isIso }),
+  routines: shape({ id: isId, name: isStr, dayIds: arrOf(isId), createdAt: isIso }),
   routineDays: shape({ id: isId, routineId: isId, name: isStr, exerciseIds: arrOf(isId) }),
   workoutSessions: shape({ id: isId, routineId: isNullStr, routineDayId: isNullStr, name: isStr, status: WS_STATUS, startedAt: isIso, completedAt: isNullIso, readinessId: isNullStr, notes: isStr }),
   exerciseSessions: (v) => {

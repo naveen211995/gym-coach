@@ -9,7 +9,7 @@
  *    which are recalculated when it is completed again.
  */
 import { applyChange, emptyChange, mergeChanges, putRecords, removeRecords, type Change } from '../domain/change';
-import { DEFAULT_SPLIT, EQUIPMENT_TYPES, MUSCLE_GROUPS, emptySchedule, scheduleOf } from '../domain/defaults';
+import { EQUIPMENT_TYPES, MUSCLE_GROUPS } from '../domain/defaults';
 import type {
   Dataset,
   Exercise,
@@ -21,13 +21,11 @@ import type {
   ReadinessRecord,
   Routine,
   RoutineDay,
-  Weekday,
   SetPerformance,
   SetStatus,
   UserSettings,
   WorkoutSession,
 } from '../domain/types';
-import { WEEKDAYS } from '../domain/types';
 import {
   applyReadiness,
   assessReadiness,
@@ -495,70 +493,14 @@ const cleanName = (n: string, what: string) => {
   return s;
 };
 
-/** A day to create, optionally pinned to one or more weekdays. */
-export type NewRoutineDay = string | { name: string; weekdays?: readonly Weekday[] };
-
-export function createRoutine(ds: Dataset, name: string, dayNames: readonly NewRoutineDay[], ctx: Ctx): { change: Change; id: string } {
-  const spec = dayNames.map((d) => (typeof d === 'string' ? { name: d, weekdays: [] as readonly Weekday[] } : { name: d.name, weekdays: d.weekdays ?? [] }));
-  const routine: Routine = { id: ctx.newId('rt'), name: cleanName(name, 'routine'), dayIds: [], schedule: emptySchedule(), createdAt: ctx.now };
-  const days: RoutineDay[] = spec.map((d) => ({ id: ctx.newId('day'), routineId: routine.id, name: cleanName(d.name, 'day'), exerciseIds: [] }));
+export function createRoutine(ds: Dataset, name: string, dayNames: string[], ctx: Ctx): { change: Change; id: string } {
+  const routine: Routine = { id: ctx.newId('rt'), name: cleanName(name, 'routine'), dayIds: [], createdAt: ctx.now };
+  const days: RoutineDay[] = dayNames.map((n) => ({ id: ctx.newId('day'), routineId: routine.id, name: cleanName(n, 'day'), exerciseIds: [] }));
   routine.dayIds = days.map((d) => d.id);
-  spec.forEach((d, i) => {
-    for (const w of d.weekdays) routine.schedule = { ...scheduleOf(routine), [w]: days[i]?.id ?? null };
-  });
   const change = putRecords(emptyChange(), 'routines', [routine]);
   putRecords(change, 'routineDays', days);
   if (!ds.settings.activeRoutineId) change.settings = { ...ds.settings, activeRoutineId: routine.id, updatedAt: ctx.now };
   return { change, id: routine.id };
-}
-
-/**
- * Point one weekday at a routine day, or at null for a rest day. The same day
- * may be scheduled on several weekdays.
- */
-export function setRoutineSchedule(ds: Dataset, routineId: string, weekday: Weekday, dayId: string | null): Change {
-  const routine = getRoutine(ds, routineId);
-  if (!WEEKDAYS.includes(weekday)) fail('That is not a weekday.');
-  if (dayId !== null && !routine.dayIds.includes(dayId)) fail('That day is not part of this routine.');
-  return putRecords(emptyChange(), 'routines', [{ ...routine, schedule: { ...scheduleOf(routine), [weekday]: dayId } }]);
-}
-
-/**
- * Set up the default weekly split on an existing routine. Purely additive: days
- * that already exist (by name) are reused and keep their exercises, missing ones
- * are created empty, and no day is ever removed.
- */
-export function applyDefaultSplit(ds: Dataset, routineId: string, ctx: Ctx): { change: Change; created: string[] } {
-  const routine = getRoutine(ds, routineId);
-  const existing = routine.dayIds
-    .map((id) => ds.routineDays.find((d) => d.id === id))
-    .filter((d): d is RoutineDay => Boolean(d));
-  const room = 7 - existing.length;
-  const missing = DEFAULT_SPLIT.filter((d) => !existing.some((e) => e.name.trim().toLowerCase() === d.name.toLowerCase()));
-  if (missing.length > room) fail(`This routine has ${existing.length} days and there is only room for ${room} more. Remove a day first.`);
-
-  const change = emptyChange();
-  const created: string[] = [];
-  const dayIds = [...routine.dayIds];
-  const idByName = new Map(existing.map((d) => [d.name.trim().toLowerCase(), d.id]));
-  for (const d of missing) {
-    const day: RoutineDay = { id: ctx.newId('day'), routineId, name: d.name, exerciseIds: [] };
-    putRecords(change, 'routineDays', [day]);
-    dayIds.push(day.id);
-    idByName.set(d.name.toLowerCase(), day.id);
-    created.push(day.name);
-  }
-
-  // Training days get their weekday; every other weekday becomes explicit rest.
-  const schedule = emptySchedule();
-  for (const d of DEFAULT_SPLIT) {
-    const id = idByName.get(d.name.toLowerCase());
-    if (!id) continue;
-    for (const w of d.weekdays) schedule[w] = id;
-  }
-  putRecords(change, 'routines', [{ ...routine, dayIds, schedule }]);
-  if (ds.settings.activeRoutineId !== routineId) change.settings = { ...ds.settings, activeRoutineId: routineId, updatedAt: ctx.now };
-  return { change, created };
 }
 
 function getRoutine(ds: Dataset, id: string): Routine {
@@ -598,9 +540,7 @@ export function removeRoutineDay(ds: Dataset, dayId: string): Change {
   const day = getDay(ds, dayId);
   const routine = getRoutine(ds, day.routineId);
   const change = removeRecords(emptyChange(), 'routineDays', [dayId]);
-  const schedule = scheduleOf(routine);
-  for (const w of WEEKDAYS) if (schedule[w] === dayId) schedule[w] = null; // those weekdays become rest
-  putRecords(change, 'routines', [{ ...routine, dayIds: routine.dayIds.filter((d) => d !== dayId), schedule }]);
+  putRecords(change, 'routines', [{ ...routine, dayIds: routine.dayIds.filter((d) => d !== dayId) }]);
   return change;
 }
 
