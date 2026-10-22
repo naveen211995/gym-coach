@@ -96,7 +96,8 @@ Before implementing a significant feature:
 6. Run tests (`npx vitest run`, `npx tsc --noEmit`).
 7. Rebuild (`node build.mjs`, which regenerates the root `index.html`) and
    re-run the E2E suite (`e2e_smoke.py`, `focus_regression.py`,
-   `offline_pwa.py`, `exercise_advance.py` in `tests/e2e/`).
+   `offline_pwa.py`, `exercise_advance.py`, `routine_picker.py` in
+   `tests/e2e/`).
 8. Inspect the result, fix any issues found.
 
 Prefer simplicity, correctness, and maintainability over "fashionable"
@@ -181,6 +182,10 @@ the suites fail instead of silently using the live CDN.
 - `offline_pwa.py` — service worker registers and precaches, the app boots
   with the network fully offline, logged data survives it, and every emitted
   URL is relative.
+- `routine_picker.py` — the routine day's exercise picker: the list is
+  searchable, a tick made before searching survives being filtered out of view,
+  and Save stays pinned in the sheet footer instead of sitting below a list
+  taller than the screen.
 - `exercise_advance.py` — finishing an exercise opens the next *unfinished* one
   **and scrolls it into view**. It used to open the right card up to 1,300px off
   screen, so the finished card was still what the lifter was looking at; the

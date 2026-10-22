@@ -441,29 +441,49 @@ function DayExercisePicker({ dayId, onClose }: { dayId: string | null; onClose: 
   const { ds, commit } = useStore();
   const day = ds.routineDays.find((d) => d.id === dayId);
   const [sel, setSel] = useState<string[]>([]);
+  const [q, setQ] = useState('');
   const [key, setKey] = useState<string | null>(null);
   if (day && key !== day.id) {
     setKey(day.id);
     setSel(day.exerciseIds);
+    setQ('');
   }
+  const close = () => { setKey(null); setQ(''); onClose(); };
   const list = ds.exercises.filter((e) => !e.archived).sort((a, b) => a.muscleGroup.localeCompare(b.muscleGroup) || a.name.localeCompare(b.name));
+  // Search narrows what is shown, never the selection: an exercise ticked
+  // before typing stays selected (and saved) while it is filtered out of view.
+  const needle = q.trim().toLowerCase();
+  const shown = needle ? list.filter((e) => e.name.toLowerCase().includes(needle) || e.muscleGroup.toLowerCase().includes(needle)) : list;
+  const hiddenSel = sel.filter((id) => !shown.some((e) => e.id === id)).length;
   return (
-    <Sheet open={Boolean(day)} title={`Exercises for ${day?.name ?? ''}`} onClose={() => { setKey(null); onClose(); }}>
-      <div className="stack">
-        <div className="list">
-          {list.map((e) => (
-            <label key={e.id} className="list-item">
-              <input type="checkbox" checked={sel.includes(e.id)} onChange={(ev) => setSel(ev.target.checked ? [...sel, e.id] : sel.filter((x) => x !== e.id))} style={{ width: 22, height: 22 }} />
-              <span className="grow">
-                <span className="title" style={{ display: 'block' }}>{e.name}</span>
-                <span className="meta">{cap(e.muscleGroup)}</span>
-              </span>
-            </label>
-          ))}
-        </div>
-        <button className="btn primary block" onClick={async () => { if (day && (await commit((d) => S.setDayExercises(d, day.id, sel)))) { setKey(null); onClose(); } }}>
+    <Sheet
+      open={Boolean(day)}
+      title={`Exercises for ${day?.name ?? ''}`}
+      onClose={close}
+      footer={
+        <button className="btn primary block" onClick={async () => { if (day && (await commit((d) => S.setDayExercises(d, day.id, sel)))) close(); }}>
           Save ({sel.length})
         </button>
+      }
+    >
+      <div className="stack">
+        <input className="input" placeholder="Search exercises" value={q} onChange={(e) => setQ(e.target.value)} aria-label="Search exercises" />
+        {shown.length === 0 ? (
+          <div className="muted small">No matching exercises. Create one in the exercise library.</div>
+        ) : (
+          <div className="list">
+            {shown.map((e) => (
+              <label key={e.id} className="list-item">
+                <input type="checkbox" checked={sel.includes(e.id)} onChange={(ev) => setSel(ev.target.checked ? [...sel, e.id] : sel.filter((x) => x !== e.id))} style={{ width: 22, height: 22 }} />
+                <span className="grow">
+                  <span className="title" style={{ display: 'block' }}>{e.name}</span>
+                  <span className="meta">{cap(e.muscleGroup)}</span>
+                </span>
+              </label>
+            ))}
+          </div>
+        )}
+        {hiddenSel > 0 && <div className="muted small">{hiddenSel} selected {hiddenSel === 1 ? 'exercise is' : 'exercises are'} hidden by the search and will still be saved.</div>}
       </div>
     </Sheet>
   );

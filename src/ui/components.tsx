@@ -196,7 +196,12 @@ export function Toggle({ label, hint, checked, onChange }: { label: string; hint
 }
 
 // ───────────────────────── sheet ─────────────────────────
-export function Sheet({ open, title, onClose, children }: { open: boolean; title: string; onClose: () => void; children: React.ReactNode }) {
+/**
+ * Bottom sheet. `footer` is rendered in a bar pinned below the scrolling body —
+ * a long list (the routine exercise picker) must never push its Save button
+ * out of reach, which on a phone means scrolling back down to find it.
+ */
+export function Sheet({ open, title, onClose, footer, children }: { open: boolean; title: string; onClose: () => void; footer?: React.ReactNode; children: React.ReactNode }) {
   const ref = useRef<HTMLDivElement>(null);
   const titleId = useId();
   // Held in a ref so the effect depends only on `open`: a parent re-render that
@@ -219,14 +224,21 @@ export function Sheet({ open, title, onClose, children }: { open: boolean; title
   if (!open) return null;
   return (
     <div className="sheet-backdrop" onClick={onClose}>
-      <div className="sheet" role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} ref={ref} onClick={(e) => e.stopPropagation()}>
+      <div className={`sheet${footer ? ' has-footer' : ''}`} role="dialog" aria-modal="true" aria-labelledby={titleId} tabIndex={-1} ref={ref} onClick={(e) => e.stopPropagation()}>
         <div className="spread" style={{ marginBottom: 12 }}>
           <h2 id={titleId}>{title}</h2>
           <button className="icon-btn" onClick={onClose} aria-label="Close">
             <Icon name="x" />
           </button>
         </div>
-        {children}
+        {footer ? (
+          <>
+            <div className="sheet-body">{children}</div>
+            <div className="sheet-footer">{footer}</div>
+          </>
+        ) : (
+          children
+        )}
       </div>
     </div>
   );
